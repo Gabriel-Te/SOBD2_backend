@@ -1,0 +1,6 @@
+@SOBD2_backend_HostAddress = http://localhost:5134
+
+GET {{SOBD2_backend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
