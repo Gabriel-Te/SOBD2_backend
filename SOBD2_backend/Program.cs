@@ -1,63 +1,32 @@
-using System.Net.WebSockets;
-using System.Text;
+using SOBD2_backend.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddSingleton<ESP32Service>();
+builder.Services.AddSingleton<LatestValueStore>();
+builder.Services.AddSingleton<PidCatalog>();
+builder.Services.AddSingleton<TelemetryHub>();
+builder.Services.AddSignalR();
+
 var app = builder.Build();
 
-app.UseWebSockets(new WebSocketOptions
-{
-    KeepAliveInterval = TimeSpan.FromSeconds(20)
-});
+app.UseWebSockets();
 
-app.Map("/ws/device", async context =>
+app.MapGet("/ws/device", async (HttpContext ctx, ESP32Service esp32) =>
 {
-    if (!context.WebSockets.IsWebSocketRequest)
+    if (!ctx.WebSockets.IsWebSocketRequest)
     {
-        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        ctx.Response.StatusCode = 400;
         return;
     }
-
-    using var socket = await context.WebSockets.AcceptWebSocketAsync();
-    Console.WriteLine("Dispositivo conectado");
-    var buffer = new byte[4096];
-
-    try
-    {
-        while (socket.State == WebSocketState.Open)
-        {
-            using var ms = new MemoryStream();
-            WebSocketReceiveResult result;
-
-            do
-            {
-                result = await socket.ReceiveAsync(
-                    new ArraySegment<byte>(buffer), context.RequestAborted);
-                ms.Write(buffer, 0, result.Count);
-            }
-            while (!result.EndOfMessage);
-
-            if (result.MessageType == WebSocketMessageType.Close)
-            {
-                await socket.CloseAsync(
-                    WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
-                break;
-            }
-
-            var text = Encoding.UTF8.GetString(ms.ToArray());
-            Console.WriteLine($"Recebido: {text}");
-
-            var ack = Encoding.UTF8.GetBytes("{\"type\":\"ack\"}");
-            await socket.SendAsync(
-                new ArraySegment<byte>(ack),
-                WebSocketMessageType.Text, true, context.RequestAborted);
-        }
-    }
-    catch (Exception ex) when (ex is WebSocketException or OperationCanceledException)
-    {
-        Console.WriteLine("Dispositivo desconectou de forma abrupta");
-    }
-
-    Console.WriteLine("Dispositivo desconectado");
+    using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
+    await esp32.HandleConnectionAsync(socket, ctx.RequestAborted);
 });
+
+// O SignalR deve apontar para o Hub do SignalR (TelemetryClientHub)
+app.MapHub<TelemetryClientHub>("/hubs/telemetry");
+
+// Força a criação do Hub de domínio na inicialização
+app.Services.GetRequiredService<TelemetryHub>();
 
 app.Run("http://0.0.0.0:5000");
