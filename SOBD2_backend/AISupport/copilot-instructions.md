@@ -109,6 +109,18 @@ NAVEGADOR (JavaScript puro, Canvas, dark mode, mobile-first)
 - **Singleton:** `TelemetryHub` (via DI).
 - **Observer:** `ClientBroadcaster` (vários navegadores assinam).
 
+### Regras dos Gráficos (Charts) — Atualizado
+
+- Todos os gráficos são do tipo X×Y, podendo ter até dois eixos Y (Y1, Y2) e um X.
+- O eixo X normalmente é o tempo (ms), mas pode ser outro PID ou uma combinação de PIDs.
+- Cada eixo (X, Y1, Y2) pode ser:
+  - Um PID isolado.
+  - Uma combinação de dois ou mais PIDs (ex: Y = RPM/Acelerador).
+- A lógica de combinação dos PIDs para cada eixo é definida na `ChartStrategy` do backend, usando métodos ou delegates.
+- Não existe mais status "Partial": ou o gráfico pode ser montado (todos os PIDs necessários estão disponíveis), ou não pode.
+- Todos os PIDs disponíveis são enviados ao frontend como valores soltos, mesmo que não façam parte de um gráfico.
+- O frontend só desenha gráficos se receber pontos válidos do backend.
+
 ---
 
 ## 5. O que vai para o código e o que não vai
