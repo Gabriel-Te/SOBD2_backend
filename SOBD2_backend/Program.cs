@@ -1,4 +1,6 @@
 using SOBD2_backend.Services;
+using SOBD2_backend.Hubs;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -6,11 +8,27 @@ builder.Services.AddSingleton<ESP32Service>();
 builder.Services.AddSingleton<LatestValueStore>();
 builder.Services.AddSingleton<PidCatalog>();
 builder.Services.AddSingleton<TelemetryHub>();
+builder.Services.AddSingleton<ClientBroadcaster>();
 builder.Services.AddSignalR();
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowLocalHost", policy =>
+    {
+        policy
+            .SetIsOriginAllowed(_ => true)
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials();
+    });
+});
 
 var app = builder.Build();
 
 app.UseWebSockets();
+app.UseCors("AllowLocalHost");
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 app.MapGet("/ws/device", async (HttpContext ctx, ESP32Service esp32) =>
 {
@@ -19,14 +37,13 @@ app.MapGet("/ws/device", async (HttpContext ctx, ESP32Service esp32) =>
         ctx.Response.StatusCode = 400;
         return;
     }
+
     using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
     await esp32.HandleConnectionAsync(socket, ctx.RequestAborted);
 });
 
-// O SignalR deve apontar para o Hub do SignalR (TelemetryClientHub)
 app.MapHub<TelemetryClientHub>("/hubs/telemetry");
 
-// Força a criação do Hub de domínio na inicialização
 app.Services.GetRequiredService<TelemetryHub>();
 
 app.Run("http://0.0.0.0:5000");

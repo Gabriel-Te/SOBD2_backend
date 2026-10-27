@@ -1,244 +1,220 @@
-# Contexto do Projeto: Telemetria OBD-II em Tempo Real (TCC / Projeto de ADS)
+# Contexto do Projeto: Telemetria OBD-II em Tempo Real
 
-> Este arquivo é a memória do projeto. Leia tudo antes de sugerir código.
-> Idioma das respostas: **português do Brasil**, linguagem simples e didática.
+> Leia este arquivo antes de sugerir alterações. Responda em português do Brasil, de forma didática e objetiva.
+> O usuário precisa entender e conseguir defender as decisões do código na apresentação do projeto.
 
----
+## 1. Objetivo
 
-## 1. Quem sou eu e como quero ser ajudado
+Construir uma plataforma de telemetria automotiva em tempo real para veículos compatíveis com OBD-II padrão SAE J1979, inicialmente validada com um Chevrolet Celta.
 
-- Sei **C# razoavelmente**, sei **pouco de C/C++**.
-- Já tenho um sistema de telemetria com WebSocket/SignalR em C#: repositório `https://github.com/Gabriel-Te/ACRH` (Clean Architecture, Hub, DTOs). Posso reaproveitar a estrutura, **exceto** a leitura de Shared Memory com `unsafe`.
-- Preciso **entender e defender** cada parte do código (apresentação para banca). Por isso:
-  - **Explique o porquê** de cada decisão, em termos simples.
-  - **Não escreva sozinho a lógica central** sem eu pedir. Prefira me guiar, revisar e corrigir o que eu escrevi. A lógica central é: `PidDecoder`, `LatestValueStore`, `IChartStrategy`/`ChartStrategyBase` e o loop de leitura do firmware.
-  - **Pode gerar à vontade o boilerplate:** configuração do .NET, endpoint WebSocket, SignalR, CSS, tabela de PIDs, parsers repetitivos.
-  - Dê passos pequenos. Uma fatia que funciona de ponta a ponta vale mais que várias peças soltas.
-
----
-
-## 2. Objetivo do sistema
-
-Telemetria automotiva em tempo real, **não exclusiva de um carro** (o teste será um Chevrolet Celta). Deve funcionar com qualquer veículo CAN que responda ao **OBD-II padrão (SAE J1979, Mode 01)**.
-
-Arquitetura distribuída em 3 camadas, com **decisão centralizada no backend**:
-
-```
-CARRO (ECU)
-   ↕  CAN / OBD-II
-ELM327 Bluetooth (tradutor)
-   ↕  Bluetooth Clássico (SPP)
-ESP32 (mensageiro "burro", firmware C++)
-   ↕  WebSocket puro   ws://IP:5000/ws/device
-BACKEND C# / .NET (cérebro, TelemetryHub)
-   ↕  SignalR          /hubs/telemetry
-NAVEGADOR (JavaScript puro, Canvas, dark mode, mobile-first)
+```text
+ECU do carro
+  ↕ OBD-II / CAN
+ELM327 Bluetooth Clássico
+  ↕ Bluetooth SPP
+ESP32
+  ↕ WebSocket puro: /ws/device
+Backend C# / .NET 9
+  ↕ SignalR: /hubs/telemetry
+Frontend JavaScript
 ```
 
-### Responsabilidades
+O projeto usa .NET 9, C# moderno e `Microsoft.NET.Sdk.Web`.
 
-| Camada | Faz | NÃO faz |
+## 2. Responsabilidades
+
+| Camada | Responsabilidades | Não deve fazer |
 |---|---|---|
-| **ESP32** | Fala com o ELM327, descobre PIDs suportados, executa a assinatura recebida, **carimba o horário da leitura**, envia bytes crus | Não decodifica, não decide, não conhece gráficos |
-| **Backend** | Mantém catálogo de PIDs, decodifica fórmulas, guarda último valor, avalia e monta gráficos, decide o que ler e em que ritmo, distribui aos clientes | Não fala com o carro diretamente |
-| **Frontend** | Recebe config e valores prontos, desenha no Canvas | Não calcula nada importante |
+| ESP32 | Conversar com o ELM327, descobrir PIDs, executar a assinatura, carimbar timestamp e enviar bytes crus | Decodificar fórmulas, decidir gráficos ou conhecer regras de apresentação |
+| Backend | Receber mensagens, validar PIDs, decodificar bytes, manter últimos valores, gerar pontos dos gráficos e distribuir dados | Acessar o carro diretamente |
+| Frontend | Receber valores e pontos prontos via SignalR e apresentar tabela/gráficos | Fazer cálculos de negócio ou decodificação OBD-II |
 
----
+O backend é o cérebro. O ESP32 envia leituras automaticamente depois de receber uma assinatura; o backend não deve pedir cada leitura individualmente.
 
-## 3. Decisões já tomadas (não reabrir sem motivo)
+## 3. Decisões de arquitetura
 
-| Tema | Decisão |
-|---|---|
-| Leitor OBD | **ELM327 Bluetooth Clássico** (não BLE). Exige **ESP32 original** (não S3/C3). |
-| CAN nativa (TWAI) | **Fora do MVP.** Existe só no diagrama como extensão (`NativeCANAdapter`). |
-| Fórmulas de decodificação | **No backend** (`PidDecoder` + `PIDDescriptor`). ESP32 manda bytes crus. |
-| Escopo de PIDs | Mode 01 padrão J1979. PIDs proprietários (Mode 22), CAN 29-bit, K-Line: **fora**. |
-| Polling | **Assinatura:** backend envia `subscribe` uma vez, ESP32 lê sozinho e empurra os dados. Não é "um pedido por leitura". |
-| Multi-PID | CAN permite até **6 PIDs por pedido** (`01 0C 0D 05`). A interface já é `readPids(lista)`. MVP começa lendo 1 por vez. Depois: multi-PID com **fallback** para 1 PID se o clone ELM falhar. |
-| Dica de velocidade ELM | Acrescentar o nº de respostas esperadas ao comando (`010C1`) evita esperar o timeout. |
-| Descoberta de PIDs | Consulta em cadeia: `0100`, `0120`, `0140`... enquanto o último bit do bitmask estiver ligado. |
-| Timestamp | **Carimbado no ESP32** no momento da leitura. |
-| Sincronia X×Y | **Sample-and-hold** no backend (`LatestValueStore`) + idade máxima (`MaxAgeMs`) por eixo. |
-| Gráficos | Cada gráfico é uma Strategy com lista de `ChartAxis` (2 ou mais parâmetros). Estados: `Ready`, `Partial`, `Unavailable`. |
-| PIDs sem gráfico | **Todos os PIDs soltos são enviados** ao frontend mesmo sem gráfico. |
-| Eixo de tempo | `ChartAxis.IsTime = true` (eixo virtual). Tempo não é PID. |
-| Singleton | `TelemetryHub` via `AddSingleton` (injeção de dependência do .NET). **Não** escrever `static Instance` manual. |
-| Vários clientes | O Hub distribui a vários navegadores (Observer). Hoje 1 carro, mas `deviceId` nas mensagens. |
-| Protocolos | ESP32 usa **WebSocket puro** (`/ws/device`). Navegadores usam **SignalR** (`/hubs/telemetry`). O ESP32 não fala SignalR. |
-| Exportação CSV/PDF | **Fora do MVP.** Só prevista na arquitetura (`DataBuffer`). |
-| Diagrama | **Conceitual**, independente de linguagem. Backend em C#, firmware em C++, frontend em JS. |
+- O ESP32 usa WebSocket puro em `/ws/device`.
+- O navegador usa SignalR em `/hubs/telemetry`.
+- `ESP32Service` mantém o WebSocket e expõe eventos `OnMessage` e `OnDisconnected`.
+- `TelemetryHub` é um singleton criado por injeção de dependência. O `Program.cs` força sua criação para que ele se inscreva no evento do `ESP32Service` durante a inicialização.
+- `LatestValueStore` usa `ConcurrentDictionary<PidKey, PidReading>` e guarda o último valor de cada PID.
+- `PidCatalog` fornece os metadados do PID.
+- `PidDecoder` converte o hexadecimal recebido em valor físico. O `Formula` do descriptor documenta a fórmula, mas atualmente a execução é feita por `switch` no decoder.
+- `ClientBroadcaster` usa `IHubContext<TelemetryClientHub>` para publicar eventos SignalR.
+- `TelemetryClientHub` é o Hub SignalR dos navegadores e não deve conter a lógica de negócio da telemetria.
+- O padrão Strategy é usado para os gráficos: cada strategy declara PIDs necessários e monta um `ChartPoint`.
+- O padrão Adapter para separar transportes/dispositivos ainda é uma pendência. Não alterar `ESP32Service` para adapter sem planejar a migração de DI e do endpoint.
 
----
+## 4. Fluxo completo
 
-## 4. Classes (diagrama revisado)
+1. O backend inicia em `http://0.0.0.0:5000`.
+2. O `Program.cs` registra os singletons, habilita WebSocket, CORS e arquivos estáticos, mapeia `/ws/device` e `/hubs/telemetry`.
+3. O ESP32 conecta em `/ws/device`.
+4. O endpoint aceita o socket e chama `ESP32Service.HandleConnectionAsync`.
+5. O ESP32 descobre PIDs suportados no carro e envia imediatamente `supportedPids`.
+6. `ESP32Service` recebe o texto e dispara `OnMessage`.
+7. `TelemetryHub`, inscrito nesse evento, desserializa a mensagem.
+8. Para `supportedPids`, converte cada PID hexadecimal para `PidKey` com modo `0x01`, guarda em `_supportedPids` e envia uma mensagem `subscribe` ao ESP32.
+9. O ESP32 executa a assinatura localmente e envia `rawReading` sem novo pedido do backend para cada amostra.
+10. Para `rawReading`, o Hub valida o PID, busca o `PIDDescriptor`, decodifica `data`, cria `PidReading` e atualiza o `LatestValueStore`.
+11. O Hub chama `ClientBroadcaster.BroadcastLatestAsync`, enviando o snapshot dos PIDs pelo evento SignalR `pidValue`.
+12. O Hub chama `EvaluateCharts`, que percorre as strategies configuradas, gera pontos possíveis e os envia pelo evento SignalR `chartPoint`.
+13. O frontend atualiza a tabela e o gráfico em tempo real.
 
-### Firmware (C++)
-- `ESP32TelemetryAgent`: orquestra; conecta no backend, envia `hello` e `supportedPids`, recebe `subscribe`, roda o loop de leitura.
-- `IOBDAdapter` (interface): `init`, `getProtocolName`, `getSupportedPids`, `readPids(lista)`.
-- `ELM327BluetoothAdapter`: implementação real via Bluetooth Classic; monta comandos, parseia texto, fallback para 1 PID.
-- `MockAdapter`: dados falsos para testar o ESP32 sem carro.
-- `NativeCANAdapter`: **futuro**.
-- `SubscriptionPlan` / `PollGroup`: grupos de até 6 PIDs + período.
-- `RawReading`: `PidKey`, bytes, `deviceTimestampMs`.
-- `PidKey`: modo + pid.
+Eventos C# são callbacks/listeners: `OnMessage += HandleDeviceMessageAsync` registra um método para ser executado quando o evento é disparado. Não são triggers de banco de dados. O `await OnMessage(text)` executa os handlers inscritos e aguarda seu processamento.
 
-### Backend (C#)
-- `TelemetryHub` (singleton): cérebro. `OnDeviceConnected`, `EvaluateAndGetReadyCharts`, `BuildAndSendSubscription`, `ProcessReading`, `OnClientConnected`, `OnDeviceDisconnected`.
-- `ESP32Service`: gerencia o WebSocket do dispositivo; dispara eventos; `SendAsync`.
-- `SubscriptionPlanner`: monta grupos de até 6 PIDs (no MVP pode ser método do Hub).
-- `PidCatalog`: dicionário `PidKey` → `PIDDescriptor`.
-- `PIDDescriptor`: **imutável**; chave, nome, unidade, nº de bytes da resposta, min, max, id da fórmula.
-- `PidDecoder`: bytes → valor físico.
-- `PidReading`: valor decodificado + horário.
-- `LatestValueStore`: último valor por PID (`ConcurrentDictionary`); `TryGetFresh(pid, maxAgeMs, nowMs)`.
-- `IChartStrategy` / `ChartStrategyBase` (abstrata) / `RpmVsSpeedChartStrategy` / `MapVsTimeChartStrategy`.
-- `ChartAxis`: papel, PID, `IsTime`, `Required`, `MaxAgeMs`.
-- `ChartPoint`, `ChartConfigDto`, enums `ChartStatus` e `ChartType`.
-- `ClientBroadcaster`: envia aos navegadores via `IHubContext` do SignalR.
-- `TelemetryClientHub`: classe `Hub` do SignalR, quase vazia (só para os navegadores conectarem).
+## 5. Contrato de mensagens
 
-### Frontend (JS puro)
-- `WebDashboard`: SignalR, `buildUI`, `updateTable`, `onPidValue`, `onChartPoint`, estado offline.
-- `CanvasChartRenderer`: linha, dispersão, gauge.
-- `DataBuffer`: **pós-MVP** (exportação).
+Todos os objetos têm `type`. Os nomes devem ser compatíveis com `DeviceMessage`; quando o JSON usar `ts`, mapear explicitamente para `Timestamp` com `JsonPropertyName` ou usar uma opção de serialização equivalente.
 
-### Padrões de projeto
-- **Adapter:** `IOBDAdapter` e implementações.
-- **Strategy:** `IChartStrategy`.
-- **Template Method:** `ChartStrategyBase`.
-- **Singleton:** `TelemetryHub` (via DI).
-- **Observer:** `ClientBroadcaster` (vários navegadores assinam).
-
-### Regras dos Gráficos (Charts) — Atualizado
-
-- Todos os gráficos são do tipo X×Y, podendo ter até dois eixos Y (Y1, Y2) e um X.
-- O eixo X normalmente é o tempo (ms), mas pode ser outro PID ou uma combinação de PIDs.
-- Cada eixo (X, Y1, Y2) pode ser:
-  - Um PID isolado.
-  - Uma combinação de dois ou mais PIDs (ex: Y = RPM/Acelerador).
-- A lógica de combinação dos PIDs para cada eixo é definida na `ChartStrategy` do backend, usando métodos ou delegates.
-- Não existe mais status "Partial": ou o gráfico pode ser montado (todos os PIDs necessários estão disponíveis), ou não pode.
-- Todos os PIDs disponíveis são enviados ao frontend como valores soltos, mesmo que não façam parte de um gráfico.
-- O frontend só desenha gráficos se receber pontos válidos do backend.
-
----
-
-## 5. O que vai para o código e o que não vai
-
-**MVP (código):** tudo do firmware exceto `NativeCANAdapter`; tudo do backend; `WebDashboard` e `CanvasChartRenderer`.
-
-**Simplificado no MVP:**
-- `PidKey` com modo fixo `01`.
-- Um único período de leitura (sem faixas rápido/médio/lento).
-- `SubscriptionPlanner` pode ser método dentro do Hub.
-- `ChartStatus.Partial` e `ChartType.Gauge/Scatter` entram só se sobrar tempo (começar com `Line`).
-- Multi-PID com fallback fica para a semana 5 ou 6.
-- Catálogo com 10 a 15 PIDs principais.
-
-**Só no diagrama:** `NativeCANAdapter`, `DataBuffer` de exportação, outros modos de PID.
-
----
-
-## 6. Fórmulas Mode 01 (catálogo inicial)
-
-| PID | Nome | Bytes | Fórmula | Unidade |
-|---|---|---|---|---|
-| 0x04 | Carga calculada do motor | 1 | `A * 100 / 255` | % |
-| 0x05 | Temperatura do líquido de arrefecimento | 1 | `A - 40` | °C |
-| 0x0B | Pressão do coletor (MAP) | 1 | `A` | kPa |
-| 0x0C | Rotação do motor | 2 | `(256*A + B) / 4` | rpm |
-| 0x0D | Velocidade | 1 | `A` | km/h |
-| 0x0F | Temperatura do ar de admissão | 1 | `A - 40` | °C |
-| 0x11 | Posição do acelerador (TPS) | 1 | `A * 100 / 255` | % |
-
-**Teste de referência:** bytes `1A F8` no PID `0x0C` devem decodificar para **1726 rpm**.
-
----
-
-## 7. Fluxo de informação
-
-### Fase 1: conexão e descoberta
-1. ESP32 conecta no ELM327 (`init`). O ELM detecta o protocolo.
-2. ESP32 descobre os PIDs suportados (`0100`, `0120`...).
-3. ESP32 conecta no backend e envia `hello` e `supportedPids`. **Não interpreta nada.**
-
-### Fase 2: backend decide
-`TelemetryHub.OnDeviceConnected`: monta o catálogo dos PIDs suportados, roda `Evaluate(supportedPids)` em cada gráfico (`Ready`/`Partial`/`Unavailable`) e escolhe os PIDs a ler (os dos gráficos prontos + todos os soltos).
-
-### Fase 3: navegador monta a tela
-Backend envia o catálogo completo e a lista de gráficos (`ChartConfigDto`). O frontend executa `buildUI`.
-
-### Fase 4: assinatura
-Hub envia `subscribe` (grupos de até 6 PIDs + período). O ESP32 passa a trabalhar sozinho.
-
-### Fase 5: loop
-- **ESP32:** dispara o grupo, carimba o horário, envia `rawReading` (PID, bytes, horário).
-- **Backend (`ProcessReading`):** decodifica, guarda no `LatestValueStore`, envia `pidValue` (valor solto) a todos os clientes, pergunta aos gráficos que usam o PID se dá para montar ponto (`TryBuildPoint`), e envia `chartPoint`.
-- **Navegador:** atualiza tabela e desenha no Canvas.
-
-### Regras do `TryBuildPoint`
-- Todos os eixos obrigatórios precisam ter valor.
-- Nenhum valor pode estar mais velho que `MaxAgeMs` do eixo (ex.: RPM/velocidade ~300 ms; temperatura ~5 s).
-- Se falhar, **não gera ponto** (retorna vazio) e o gráfico fica "sem dados atualizados".
-- O ponto é gerado quando chega leitura nova do **eixo mais rápido**.
-
-### Casos especiais
-- ELM falha no multi-PID: volta a 1 PID por vez e avisa o backend.
-- PID para de responder: o gráfico estoura `MaxAgeMs` e é marcado como desatualizado.
-- ESP32 desconecta: Hub marca tudo offline e avisa os navegadores.
-- Novo navegador entra: recebe catálogo e gráficos e segue ao vivo.
-
----
-
-## 8. Contrato de mensagens (atualizado)
-
-Toda mensagem tem o campo `type`. O Hub faz `switch` por ele.
+### ESP32 → backend
 
 ```json
-// ESP32 -> Backend
-{ "type": "hello", "deviceId": "esp32-01", "adapter": "ELM327_BT", "protocol": "ISO 15765-4 CAN 11/500" }
-{ "type": "supportedPids", "deviceId": "esp32-01", "pids": ["04","05","0B","0C","0D"] }
-{ "type": "rawReading", "deviceId": "esp32-01", "pid": "0C", "data": "1AF8", "ts": 123456 }
-
-// Backend -> ESP32
-{ "type": "subscribe", "groups": [ { "periodMs": 200, "pids": ["0C","0D","0B"] } ] }
+{"Type":"hello","DeviceId":"esp32-mock","Adapter":"ELM327_BT","Protocol":"ISO 15765-4 CAN 11/500"}
+{"Type":"supportedPids","DeviceId":"esp32-mock","Pids":["04","05","0B","0C","0D"]}
+{"Type":"rawReading","DeviceId":"esp32-mock","Pid":"0C","Data":"1AF8","Ts":123456}
 ```
 
-Eventos SignalR para os navegadores (nomes provisórios): `catalog`, `charts`, `pidValue`, `chartPoint`, `deviceStatus`.
+### Backend → ESP32
 
----
+```json
+{"type":"subscribe","groups":[{"periodMs":200,"pids":["04","05","0B","0C","0D"]}]}
+```
 
-## 9. Ordem de codificação
+A leitura `Data: "1AF8"` para o PID `0C` representa `(0x1A * 256 + 0xF8) / 4 = 1726 rpm`.
 
-| Passo | O que fazer | Pronto quando |
-|---|---|---|
-| 0 | Fechar o contrato de mensagens (seção 8) | Documento com os formatos |
-| 1 | Projeto do backend (estrutura do ACRH sem Shared Memory) | Compila e sobe vazio |
-| 2 | Modelos puros: `PidKey`, `PIDDescriptor`, `PidReading`, `RawReading`, `PidCatalog` (5 PIDs) | Compila |
-| 3 | `PidDecoder` **com testes** (EU escrevo) | Testes passam (1A F8 = 1726 rpm) |
-| 4 | `LatestValueStore` **com testes de idade máxima** (EU escrevo) | Testes passam |
-| 5 | `ChartAxis`, `IChartStrategy`, `ChartStrategyBase`, `RpmVsSpeed` **com testes** (EU escrevo) | Testes passam |
-| 6 | `ESP32Service` + `/ws/device` | Recebe mensagem de teste (wscat/Postman) |
-| 7 | `TelemetryHub` + `ClientBroadcaster` + `TelemetryClientHub` | Fluxo completo no backend |
-| 8 | **Simulador de dispositivo em C#** (console que fala `/ws/device`, andaime de dev, não entra no diagrama) | Dados falsos chegam ao Hub |
-| 9 | Frontend: tabela de PIDs, depois gráfico de linha | Valores na tela |
-| 10 | Firmware ESP32 + ELM327 real (semana 5) | ESP32 lendo o carro |
-| 11 | Multi-PID com fallback, testes no carro, documentação (semana 6) | Entrega |
+### Eventos SignalR → frontend
 
-**Primeira fatia vertical a buscar:** simulador → backend → navegador mostrando um RPM. Só depois completar camadas.
+- `deviceStatus`: conexão do cliente SignalR e estado do dispositivo quando implementado.
+- `pidValue`: snapshot dos últimos valores.
+- `chartPoint`: ponto produzido por uma strategy.
+- `catalog` e `charts`: previstos para configuração futura do frontend.
 
----
+Formato atual aproximado de `pidValue`:
 
-## 10. Pendências e dúvidas em aberto
+```json
+[{"pid":"01-0C","value":1726,"timestamp":123456}]
+```
 
-- Fechar o contrato de mensagens (seção 8 é rascunho).
-- Escolher biblioteca de WebSocket e de Bluetooth no ESP32 (Arduino `BluetoothSerial` + biblioteca de WebSocket cliente).
-- Decidir se `SubscriptionPlanner` vira classe ou método do Hub.
-- Definir a política exata de geração de pontos quando há mais de dois eixos.
-- Diagrama de sequência e estrutura de pastas ainda não feitos.
+Formato atual de `chartPoint`:
 
----
+```json
+{"chart":"RPM vs Tempo","x":123456,"y":[1726],"timestamp":123456}
+```
 
-## 11. Diagrama de classes completo (Mermaid)
+## 6. Arquivos atuais e responsabilidades
 
-(O diagrama permanece igual, pois já reflete o fluxo discutido.)
+### Entrada e infraestrutura
+
+- `Program.cs`: DI, CORS permissivo para desenvolvimento, arquivos estáticos, endpoint WebSocket, endpoint SignalR e criação do `TelemetryHub`.
+- `Hubs/TelemetryClientHub.cs`: herda de `Hub` e envia `deviceStatus` ao cliente conectado.
+- `Services/ESP32Service.cs`: recebe fragmentos/mensagens WebSocket, remonta mensagens completas, dispara eventos e envia JSON ao dispositivo.
+- `Services/ClientBroadcaster.cs`: publica `pidValue` e `chartPoint` via `IHubContext<TelemetryClientHub>`.
+
+### Domínio OBD-II
+
+- `Entities/PidKey.cs`: struct imutável com `Mode`, `Pid`, igualdade, hash e representação hexadecimal.
+- `Entities/PIDDescriptor.cs`: metadados imutáveis do PID: chave, nome, unidade, quantidade de bytes, limites e fórmula documentada.
+- `Services/PidCatalog.cs`: catálogo atual de PIDs Mode 01.
+- `Services/PidDecoder.cs`: recebe `PIDDescriptor` e string hexadecimal, converte bytes e aplica a fórmula conhecida pelo PID.
+- `Services/LatestValueStore.cs`: guarda `PidReading` por `PidKey` em `ConcurrentDictionary`.
+
+### Gráficos
+
+- `Services/IChartStrategy.cs`: contrato de uma strategy e classe `ChartPoint`.
+- `RpmVsTimeChartStrategy.cs`: strategy atual de RPM no tempo, exigindo PID `01-0C`.
+- `Services/TelemetryHub.cs`: processa mensagens, atualiza store, executa strategies e chama o broadcaster.
+- `frontend_teste/index.html`: cliente SignalR de teste; exibe PIDs, logs e desenha uma linha simples em Canvas.
+
+## 7. PIDs atualmente catalogados
+
+Mode 01:
+
+| PID | Nome | Bytes | Fórmula | Unidade |
+|---|---|---:|---|---|
+| 04 | Carga calculada | 1 | `A * 100 / 255` | % |
+| 05 | Temperatura do líquido | 1 | `A - 40` | °C |
+| 0B | Pressão MAP | 1 | `A` | kPa |
+| 0C | Rotação | 2 | `(256*A + B) / 4` | rpm |
+| 0D | Velocidade | 1 | `A` | km/h |
+| 0F | Temperatura do ar | 1 | `A - 40` | °C |
+| 10 | Vazão MAF | 2 | `(256*A + B) / 100` | g/s |
+| 11 | Posição do acelerador | 1 | `A * 100 / 255` | % |
+| 0E | Avanço da ignição | 1 | `(A / 2) - 64` | ° |
+| 1F | Temperatura do combustível | 1 | `A - 40` | °C |
+| 2F | Nível de combustível | 1 | `A * 100 / 255` | % |
+| 46 | Temperatura ambiente | 1 | `A - 40` | °C |
+
+O catálogo é independente da disponibilidade real do carro. A lista recebida em `supportedPids` define os PIDs que podem ser aceitos para a sessão atual.
+
+## 8. Regras atuais dos gráficos
+
+- Não há enumeração de tipos de gráfico no contrato atual. O conceito é um gráfico de X contra um ou mais Y.
+- Um ponto tem um X, um vetor de Y e timestamp.
+- O caso comum é X = tempo de observação e Y = um ou mais PIDs.
+- No futuro, X e qualquer Y poderão ser funções que combinem dois ou mais `PidReading`; a strategy deve declarar todos os PIDs necessários e realizar a combinação no backend.
+- Um gráfico pode ter vários Y, por isso `ChartPoint.Y` é `double[]`.
+- O frontend apenas desenha o ponto recebido; não deve recomputar a regra de negócio.
+- Não existe status `Partial`. Um gráfico só é considerado disponível quando todos os `RequiredPids` estão em `_supportedPids`; caso contrário, a strategy não é avaliada.
+- PIDs disponíveis que não participam de gráfico continuam sendo enviados no evento `pidValue` e podem ser mostrados como informações isoladas.
+- `EvaluateCharts` percorre todas as strategies configuradas. No futuro, deve-se separar strategies disponíveis/ativas quando o número crescer, filtrando-as após `supportedPids` e avaliando somente as ativas.
+- O `RpmVsTimeChartStrategy` exige `01-0C`, usa timestamp como X, aceita leitura com até 500 ms e produz Y com RPM.
+- Se faltar dado no snapshot ou ele estiver expirado, a strategy retorna `null` e nenhum `chartPoint` é enviado.
+- A regra de sample-and-hold e `MaxAgeMs` por eixo ainda precisa ser formalizada nas classes de gráfico; não inventar essa API sem alinhar primeiro.
+
+## 9. Frontend de teste
+
+O arquivo `frontend_teste/index.html` usa SignalR 8.0.7 por CDN e registra handlers para `deviceStatus`, `pidValue` e `chartPoint`. Quando servido pelo próprio backend, deve usar URL relativa `/hubs/telemetry` e ser acessado por HTTP, nunca por `file://`.
+
+Para Live Server (normalmente `127.0.0.1:5500`), a URL deve ser absoluta:
+
+```javascript
+.withUrl("http://localhost:5000/hubs/telemetry")
+```
+
+Nesse caso, CORS precisa estar habilitado no backend. A política atual é permissiva para desenvolvimento (`SetIsOriginAllowed(_ => true)`, métodos/headers e credenciais). Em produção, substituir por origens explícitas.
+
+`UseDefaultFiles` e `UseStaticFiles` estão no pipeline, mas o frontend só será servido pelo backend se estiver em `wwwroot`; a pasta atual `frontend_teste` não é automaticamente `wwwroot`.
+
+## 10. Simulador e validação já realizados
+
+O mock do ESP32 conecta em `ws://localhost:5000/ws/device`, envia `supportedPids`, recebe `subscribe` e envia várias leituras `rawReading` em sequência.
+
+O teste validou:
+
+- desserialização da lista de PIDs;
+- conversão de strings hexadecimais para `PidKey`;
+- envio de `subscribe` pelo WebSocket;
+- filtragem de PID suportado;
+- decodificação `1AF8` → `1726 rpm`;
+- atualização do `LatestValueStore`;
+- geração do ponto `RPM vs Tempo`;
+- publicação de `pidValue` e `chartPoint` para clientes SignalR.
+
+Ao depurar, mensagens de carregamento de DLL não indicam falha. Os logs importantes são os emitidos por `TelemetryHub`.
+
+## 11. Pendências para concluir o backend
+
+1. Criar testes automatizados para `PidDecoder`, `LatestValueStore`, `TelemetryHub` e strategies.
+2. Corrigir/garantir o mapeamento formal de `Ts` para `Timestamp` no `DeviceMessage`.
+3. Separar DTOs e `DeviceMessage` de `TelemetryHub` em arquivos próprios quando estabilizar o contrato.
+4. Implementar catálogo/configuração inicial para o frontend via SignalR.
+5. Implementar status de conexão/desconexão do dispositivo e propagá-lo aos navegadores.
+6. Implementar strategies adicionais e, se necessário, uma coleção de strategies ativas filtrada por PIDs suportados.
+7. Formalizar e implementar combinações de PIDs em eixos X/Y e regras de idade por eixo.
+8. Criar o `IDeviceAdapter` e migrar `ESP32Service` para uma arquitetura Adapter sem quebrar o endpoint nem a DI.
+9. Adicionar validação de tamanho/paridade de hexadecimal e quantidade esperada de bytes no decoder.
+10. Adicionar logs estruturados e remover `Console.WriteLine` de diagnóstico quando o MVP estiver estabilizado.
+11. Definir política de múltiplas conexões/dispositivos; o estado atual mantém um único socket e um único conjunto de PIDs.
+
+## 12. Ordem recomendada a partir daqui
+
+1. Validar o frontend SignalR com o simulador.
+2. Adicionar testes unitários para decoder/store/strategies.
+3. Estabilizar DTOs e contrato JSON.
+4. Implementar mais strategies e configuração de charts.
+5. Implementar `IDeviceAdapter`/adapters do ESP32 e MockAdapter.
+6. Integrar ELM327 Bluetooth real.
+7. Testar com o carro e tratar fallback multi-PID.
+
+Não alterar arquivos fora do escopo solicitado. Antes de escrever código, explicar o fluxo e confirmar a regra de negócio quando houver ambiguidade.

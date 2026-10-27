@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Telemetry Test</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: Arial, sans-serif;
+    }
+
+    .panel {
+      background: #111827;
+      border: 1px solid #374151;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 18px;
+    }
+
+    h1, h2, h3 {
+      margin-top: 0;
+    }
+
+    #status {
+      font-weight: bold;
+      font-size: 18px;
+    }
+
+    .connected {
+      color: #4ade80;
+    }
+
+    .disconnected {
+      color: #f87171;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    #log {
+      background: #020817;
+      color: #d1fae5;
+      border: 1px solid #334155;
+      padding: 12px;
+      border-radius: 8px;
+      height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+
+    th, td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #334155;
+      text-align: left;
+    }
+
+    canvas {
+      width: 100%;
+      height: 250px;
+      background: #020817;
+      border-radius: 8px;
+      border: 1px solid #334155;
+    }
+  </style>
+</head>
+<body>
+  <h1>Telemetry Test</h1>
+
+  <div class="panel">
+    <div id="status" class="disconnected">Desconectado</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Últimos valores</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>PID</th>
+            <th>Valor</th>
+            <th>Tempo</th>
+          </tr>
+        </thead>
+        <tbody id="pidTableBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Gráfico</h3>
+      <canvas id="chartCanvas" width="500" height="250"></canvas>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Logs</h3>
+    <pre id="log"></pre>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const pidTableBody = document.getElementById("pidTableBody");
+    const logEl = document.getElementById("log");
+    const canvas = document.getElementById("chartCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const points = [];
+    const MAX_POINTS = 40;
+
+    function log(message) {
+      const now = new Date().toLocaleTimeString();
+      logEl.textContent += "[" + now + "] " + message + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function drawChart() {
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      // fundo
+      ctx.fillStyle = "#020817";
+      ctx.fillRect(0, 0, w, h);
+
+      // eixo
+      ctx.strokeStyle = "#334155";
+      ctx.beginPath();
+      ctx.moveTo(20, 20);
+      ctx.lineTo(20, h - 20);
+      ctx.lineTo(w - 20, h - 20);
+      ctx.stroke();
+
+      if (points.length < 2) return;
+
+      const minX = Math.min(...points.map(p => p.x));
+      const maxX = Math.max(...points.map(p => p.x));
+      const minY = Math.min(...points.map(p => p.y));
+      const maxY = Math.max(...points.map(p => p.y));
+
+      const rangeX = maxX - minX || 1;
+      const rangeY = maxY - minY || 1;
+
+      ctx.strokeStyle = "#4ade80";
+      ctx.beginPath();
+
+      points.forEach((point, index) => {
+        const px = 20 + ((point.x - minX) / rangeX) * (w - 40);
+        const py = h - 20 - ((point.y - minY) / rangeY) * (h - 40);
+
+        if (index === 0) {
+          ctx.moveTo(px, py);
+        } else {
+          ctx.lineTo(px, py);
+        }
+      });
+
+      ctx.stroke();
+    }
+
+    const connection = new signalR.HubConnectionBuilder()
+.withUrl("http://localhost:5000/hubs/telemetry")
+      .withAutomaticReconnect()
+      .build();
+
+    connection.on("deviceStatus", (msg) => {
+      log("deviceStatus: " + JSON.stringify(msg));
+      statusEl.textContent = msg.connected ? "Conectado" : "Desconectado";
+      statusEl.className = msg.connected ? "connected" : "disconnected";
+    });
+
+    connection.on("pidValue", (payload) => {
+      log("pidValue: " + JSON.stringify(payload));
+
+      pidTableBody.innerHTML = payload
+        .map(item => `
+          <tr>
+            <td>${item.pid}</td>
+            <td>${Number(item.value).toFixed(2)}</td>
+            <td>${new Date(item.timestamp).toLocaleTimeString()}</td>
+          </tr>
+        `)
+        .join("");
+    });
+
+    connection.on("chartPoint", (payload) => {
+      log("chartPoint: " + JSON.stringify(payload));
+
+      const point = {
+        x: Number(payload.x),
+        y: Number(Array.isArray(payload.y) ? payload.y[0] : payload.y),
+        timestamp: payload.timestamp
+      };
+
+      points.push(point);
+
+      if (points.length > MAX_POINTS) {
+        points.shift();
+      }
+
+      drawChart();
+    });
+
+    connection.onreconnecting(() => {
+      statusEl.textContent = "Reconectando...";
+      statusEl.className = "disconnected";
+      log("Reconectando...");
+    });
+
+    connection.onreconnected(() => {
+      statusEl.textContent = "Conectado";
+      statusEl.className = "connected";
+      log("Reconectado.");
+    });
+
+    connection.onclose(() => {
+      statusEl.textContent = "Desconectado";
+      statusEl.className = "disconnected";
+      log("Conexão fechada.");
+    });
+
+    async function start() {
+      try {
+        await connection.start();
+        statusEl.textContent = "Conectado";
+        statusEl.className = "connected";
+        log("Conectado ao hub.");
+      } catch (err) {
+        statusEl.textContent = "Erro";
+        statusEl.className = "disconnected";
+        log("Erro ao conectar: " + err);
+      }
+    }
+
+    start();
+  </script>
+</body>
+</html>

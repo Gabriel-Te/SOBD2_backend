@@ -1,6 +1,17 @@
 using Microsoft.AspNetCore.SignalR;
+namespace SOBD2_backend.Hubs;
+
 
 public class TelemetryClientHub : Hub
 {
-    // Pode ficar vazio no MVP, serve só para os navegadores conectarem
+    public override async Task OnConnectedAsync()
+    {
+        await Clients.Caller.SendAsync("deviceStatus", new
+        {
+            connected = true,
+            connectionId = Context.ConnectionId
+        });
+
+        await base.OnConnectedAsync();
+    }
 }

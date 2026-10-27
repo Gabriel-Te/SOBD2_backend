@@ -8,24 +8,28 @@ public class TelemetryHub
     private readonly ESP32Service _esp32;
     private readonly LatestValueStore _latest;
     private readonly PidCatalog _catalog;
+    private readonly ClientBroadcaster _broadcaster;
 
-    // Guarda os PIDs suportados pelo dispositivo conectado
     private HashSet<PidKey> _supportedPids = new();
 
     private readonly List<IChartStrategy> _strategies = new()
     {
         new RpmVsTimeChartStrategy(),
-        // Adicione outras strategies aqui
+        // adicione as outras strategies aqui
     };
 
-    public TelemetryHub(ESP32Service esp32, LatestValueStore latest, PidCatalog catalog)
+    public TelemetryHub(
+        ESP32Service esp32,
+        LatestValueStore latest,
+        PidCatalog catalog,
+        ClientBroadcaster broadcaster)
     {
         _esp32 = esp32;
         _latest = latest;
         _catalog = catalog;
+        _broadcaster = broadcaster;
 
         _esp32.OnMessage += HandleDeviceMessageAsync;
-        // _esp32.OnDisconnected += OnDeviceDisconnectedAsync; // se quiser tratar desconexão
     }
 
     private async Task HandleDeviceMessageAsync(string json)
@@ -124,11 +128,13 @@ public class TelemetryHub
                             var reading = new PidReading(desc.Key, valor, msg.Timestamp);
                             _latest.Update(reading);
 
+                            await _broadcaster.BroadcastLatestAsync(_latest);
+
                             Console.WriteLine($"RawReading recebido: PID={msg.Pid}, Data={msg.Data}, Timestamp={msg.Timestamp}");
                             Console.WriteLine($"→ {desc.Name} ({desc.Unit}): {valor}");
 
                             // Avalia gráficos
-                            EvaluateCharts(msg.Timestamp);
+                            await EvaluateCharts(msg.Timestamp);
                         }
                         else
                         {
@@ -153,18 +159,22 @@ public class TelemetryHub
     }
 
     // Chame este método sempre que receber um novo valor de PID
-    private void EvaluateCharts(long nowMs)
+    private async Task EvaluateCharts(long nowMs)
     {
         var values = _latest.All.ToDictionary(r => r.Pid, r => r);
+
         foreach (var strategy in _strategies)
         {
             if (strategy.IsAvailable(_supportedPids))
             {
                 var point = strategy.TryBuildPoint(values, nowMs);
-                if (point != null)
+
+                if (point is not null)
                 {
-                    // Aqui você pode enviar para o frontend via SignalR
-                    Console.WriteLine($"Novo ponto para gráfico '{strategy.Title}': X={point.X}, Y={string.Join(",", point.Y)}");
+                    await _broadcaster.BroadcastChartPoint(strategy.Title, point);
+
+                    Console.WriteLine(
+                        $"Novo ponto para gráfico '{strategy.Title}': X={point.X}, Y={string.Join(",", point.Y)}");
                 }
             }
         }
