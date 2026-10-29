@@ -9,6 +9,7 @@ builder.Services.AddSingleton<LatestValueStore>();
 builder.Services.AddSingleton<PidCatalog>();
 builder.Services.AddSingleton<TelemetryHub>();
 builder.Services.AddSingleton<ClientBroadcaster>();
+
 builder.Services.AddSignalR();
 
 builder.Services.AddCors(options =>

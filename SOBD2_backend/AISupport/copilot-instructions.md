@@ -65,14 +65,16 @@ Eventos C# são callbacks/listeners: `OnMessage += HandleDeviceMessageAsync` reg
 
 ## 5. Contrato de mensagens
 
-Todos os objetos têm `type`. Os nomes devem ser compatíveis com `DeviceMessage`; quando o JSON usar `ts`, mapear explicitamente para `Timestamp` com `JsonPropertyName` ou usar uma opção de serialização equivalente.
+As mensagens devem respeitar exatamente os nomes definidos no contrato. As mensagens enviadas pelo ESP32 usam `Type`, `DeviceId`, `Pid`, `Data`, `Timestamp` e `Pids`. A mensagem `subscribe` enviada pelo backend usa `type`, `groups`, `periodMs` e `pids`.
+
+O contrato oficial atual utiliza `Timestamp`. Não usar `Ts` sem implementar compatibilidade explícita no `DeviceMessage` com `JsonPropertyName` ou outro mapeamento equivalente.
 
 ### ESP32 → backend
 
 ```json
 {"Type":"hello","DeviceId":"esp32-mock","Adapter":"ELM327_BT","Protocol":"ISO 15765-4 CAN 11/500"}
 {"Type":"supportedPids","DeviceId":"esp32-mock","Pids":["04","05","0B","0C","0D"]}
-{"Type":"rawReading","DeviceId":"esp32-mock","Pid":"0C","Data":"1AF8","Ts":123456}
+{"Type":"rawReading","DeviceId":"esp32-mock","Pid":"0C","Data":"1AF8","Timestamp":123456}
 ```
 
 ### Backend → ESP32
@@ -196,7 +198,7 @@ Ao depurar, mensagens de carregamento de DLL não indicam falha. Os logs importa
 ## 11. Pendências para concluir o backend
 
 1. Criar testes automatizados para `PidDecoder`, `LatestValueStore`, `TelemetryHub` e strategies.
-2. Corrigir/garantir o mapeamento formal de `Ts` para `Timestamp` no `DeviceMessage`.
+2. Manter o campo oficial `Timestamp` no contrato. Só adicionar compatibilidade com `Ts` se houver necessidade real e mapeamento explícito no `DeviceMessage`.
 3. Separar DTOs e `DeviceMessage` de `TelemetryHub` em arquivos próprios quando estabilizar o contrato.
 4. Implementar catálogo/configuração inicial para o frontend via SignalR.
 5. Implementar status de conexão/desconexão do dispositivo e propagá-lo aos navegadores.
@@ -218,3 +220,71 @@ Ao depurar, mensagens de carregamento de DLL não indicam falha. Os logs importa
 7. Testar com o carro e tratar fallback multi-PID.
 
 Não alterar arquivos fora do escopo solicitado. Antes de escrever código, explicar o fluxo e confirmar a regra de negócio quando houver ambiguidade.
+
+## 13. Estado real revisado da aplicação
+
+O fluxo principal do MVP está implementado:
+
+- `Program.cs` configura DI, CORS, arquivos estáticos, WebSocket e SignalR.
+- `ESP32Service` recebe mensagens WebSocket, remonta fragmentos, dispara `OnMessage` e envia JSON ao dispositivo.
+- `TelemetryHub` processa `supportedPids` e `rawReading`.
+- `PidDecoder` já existe e converte dados hexadecimais em valores físicos.
+- `PidCatalog` fornece os descritores dos PIDs Mode 01.
+- `LatestValueStore` guarda o último `PidReading` por `PidKey`.
+- `ClientBroadcaster` publica `pidValue` e `chartPoint` via SignalR.
+- `TelemetryClientHub` é o Hub SignalR dos navegadores e não contém regras de negócio.
+- `RpmVsTimeChartStrategy` é a única Strategy de gráfico implementada atualmente.
+- `frontend_teste/index.html` recebe os eventos SignalR, atualiza a tabela e desenha o gráfico.
+
+`DeviceMessage` está atualmente declarado no final de `TelemetryHub.cs`. A separação para um arquivo próprio é uma melhoria futura, não assumir que esse arquivo já existe.
+
+`ESP32Service` expõe `OnDisconnected`, mas o `TelemetryHub` ainda não está inscrito nesse evento para publicar o estado de desconexão aos navegadores.
+
+As classes `RpmVsSpeedChartStrategy`, `MapVsTimeChartStrategy`, `IDeviceAdapter`, `ELM327Adapter`, `NativeCANAdapter` e `MockAdapter` são planejadas ou pertencem ao firmware futuro. Não apresentá-las como implementadas no backend atual.
+
+## 14. Regras para o firmware e o simulador
+
+O ESP32 deve permanecer como transportador de dados:
+
+- não aplicar fórmulas OBD-II;
+- não converter bytes para RPM, velocidade ou temperatura;
+- não decidir quais gráficos serão exibidos;
+- enviar os bytes crus recebidos do ELM327;
+- enviar o timestamp da leitura;
+- executar a assinatura recebida do backend sem solicitar cada leitura individualmente.
+
+O simulador pode gerar bytes hexadecimais artificialmente, mas isso serve apenas para produzir dados de teste. A lógica de decodificação continua exclusivamente no backend.
+
+Para o PID `0C`, o valor `Data` é formado pelos bytes crus `A` e `B`. O backend aplica `(256 * A + B) / 4`. O ESP32 real não deve fazer essa multiplicação ou divisão.
+
+## 15. Diagramas e documentação
+
+`AISupport/UseCaseDiagram.txt` contém atualmente um diagrama de classes, apesar do nome do arquivo.
+
+Ao atualizar o diagrama:
+
+- representar primeiro as classes realmente existentes;
+- mostrar `ESP32Service`, `TelemetryHub`, `PidCatalog`, `PidDecoder`, `LatestValueStore`, `ClientBroadcaster` e `TelemetryClientHub`;
+- representar ESP32 e ELM327 como sistemas externos quando não houver código deles nesta solution;
+- mostrar WebSocket entre ESP32 e backend;
+- mostrar SignalR entre backend e frontend;
+- marcar classes futuras como `<<planejado>>`;
+- não incluir classes planejadas como se já estivessem implementadas;
+- usar sintaxe Mermaid compatível e simples, evitando assinaturas genéricas complexas quando o renderizador não as suportar.
+
+## 16. Critérios para futuras alterações
+
+Antes de alterar o código:
+
+1. Ler este arquivo e os arquivos diretamente relacionados.
+2. Distinguir implementação atual de planejamento.
+3. Preservar os contratos JSON existentes.
+4. Manter o ESP32 sem regras de negócio.
+5. Explicar decisões importantes em português do Brasil.
+6. Preferir alterações pequenas e testáveis.
+7. Validar a compilação após alterações no backend.
+8. Executar testes relacionados quando existirem.
+9. Informar arquivos criados, editados e pendências.
+10. Não adicionar Design Patterns sem necessidade real.
+
+O próximo foco recomendado é estabilizar o fluxo existente, criar testes para `PidDecoder`, `LatestValueStore` e `RpmVsTimeChartStrategy`, e tratar a desconexão do dispositivo antes de expandir a arquitetura.

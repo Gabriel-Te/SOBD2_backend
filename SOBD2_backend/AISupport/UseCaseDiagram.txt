@@ -1,0 +1,189 @@
+classDiagram
+
+    class Program {
+        +configurarServicos()
+        +configurarWebSocket()
+        +configurarSignalR()
+        +configurarArquivosEstaticos()
+    }
+
+    class ESP32Service {
+        -WebSocket socket
+        +bool IsConnected
+        +OnMessage
+        +OnDisconnected
+        +HandleConnectionAsync()
+        +SendAsync()
+    }
+
+    class TelemetryHub {
+        -ESP32Service esp32
+        -LatestValueStore latest
+        -PidCatalog catalog
+        -ClientBroadcaster broadcaster
+        -supportedPids
+        -strategies
+        +HandleDeviceMessageAsync()
+        -EvaluateCharts()
+    }
+
+    class ClientBroadcaster {
+        -IHubContext hub
+        +BroadcastLatestAsync()
+        +BroadcastChartPoint()
+    }
+
+    class TelemetryClientHub {
+        +OnConnectedAsync()
+    }
+
+    class DeviceMessage {
+        +string Type
+        +string DeviceId
+        +string Adapter
+        +string Protocol
+        +string Pid
+        +string Data
+        +long Timestamp
+        +List Pids
+    }
+
+    class PidKey {
+        +byte Mode
+        +byte Pid
+        +Equals()
+        +GetHashCode()
+        +ToString()
+    }
+
+    class PIDDescriptor {
+        +PidKey Key
+        +string Name
+        +string Unit
+        +int ResponseBytes
+        +double Min
+        +double Max
+        +string Formula
+    }
+
+    class PidCatalog {
+        -catalog
+        +Get()
+        +All()
+    }
+
+    class PidDecoder {
+        +Decode()
+    }
+
+    class PidReading {
+        +PidKey Pid
+        +double Value
+        +long TimestampMs
+    }
+
+    class LatestValueStore {
+        -latest
+        +Update()
+        +TryGet()
+        +All()
+    }
+
+    class IChartStrategy {
+        +string Title
+        +RequiredPids
+        +IsAvailable()
+        +TryBuildPoint()
+    }
+
+    class ChartPoint {
+        +double X
+        +double[] Y
+        +long TimestampMs
+    }
+
+    class RpmVsTimeChartStrategy {
+        +string Title
+        +RequiredPids
+        +IsAvailable()
+        +TryBuildPoint()
+    }
+
+    class RpmVsSpeedChartStrategy {
+        +string Title
+        +RequiredPids
+        +IsAvailable()
+        +TryBuildPoint()
+    }
+
+    class MapVsTimeChartStrategy {
+        +string Title
+        +RequiredPids
+        +IsAvailable()
+        +TryBuildPoint()
+    }
+
+    class ESP32Device {
+        +connectWiFi()
+        +connectWebSocket()
+        +sendSupportedPids()
+        +receiveSubscribe()
+        +sendRawReading()
+    }
+
+    class ELM327 {
+        +receiveObdResponse()
+        +provideRawBytes()
+    }
+
+    class TelemetryTestPage {
+        +startConnection()
+        +onDeviceStatus()
+        +onPidValue()
+        +onChartPoint()
+        +drawChart()
+    }
+
+    class CanvasChartRenderer {
+        +drawAxes()
+        +drawLine()
+        +renderPoint()
+    }
+
+    IChartStrategy <|.. RpmVsTimeChartStrategy
+    IChartStrategy <|.. RpmVsSpeedChartStrategy
+    IChartStrategy <|.. MapVsTimeChartStrategy
+
+    Program --> ESP32Service
+    Program --> TelemetryHub
+    Program --> ClientBroadcaster
+    Program --> TelemetryClientHub
+
+    ESP32Device --> ESP32Service : WebSocket
+    ELM327 --> ESP32Device : bytes crus
+
+    ESP32Service --> TelemetryHub : OnMessage
+    TelemetryHub --> ESP32Service : subscribe
+
+    TelemetryHub --> DeviceMessage
+    TelemetryHub --> PidCatalog
+    TelemetryHub --> PidDecoder
+    TelemetryHub --> LatestValueStore
+    TelemetryHub --> ClientBroadcaster
+    TelemetryHub --> IChartStrategy
+
+    PidCatalog --> PIDDescriptor
+    PIDDescriptor --> PidKey
+    PidDecoder --> PIDDescriptor
+    LatestValueStore --> PidReading
+    PidReading --> PidKey
+    IChartStrategy --> PidKey
+    IChartStrategy --> PidReading
+    IChartStrategy --> ChartPoint
+
+    ClientBroadcaster --> TelemetryClientHub : SignalR
+    TelemetryClientHub --> TelemetryTestPage : SignalR
+    ClientBroadcaster --> TelemetryTestPage : pidValue
+    ClientBroadcaster --> TelemetryTestPage : chartPoint
+
+    TelemetryTestPage --> CanvasChartRenderer
