@@ -1,0 +1,66 @@
+@startuml
+
+left to right direction
+
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam actorStyle stickman
+
+actor "Placa ESP32\nconectada ao carro" as ESP32
+
+rectangle "Plataforma de Telemetria OBD-II" {
+
+    usecase "Enviar PIDs\nsuportados" as UC_SupportedPids
+    usecase "Receber assinatura\nde leitura" as UC_Subscribe
+    usecase "Enviar leituras\nbrutas" as UC_RawReading
+
+    usecase "Receber mensagens\ndo ESP32" as UC_Receive
+    usecase "Validar PID" as UC_Validate
+    usecase "Decodificar dados\nOBD-II" as UC_Decode
+    usecase "Armazenar último\nvalor em memória" as UC_LatestValue
+
+    usecase "Publicar valores\nvia SignalR" as UC_PublishValues
+    usecase "Avaliar gráficos" as UC_EvaluateCharts
+    usecase "Publicar pontos\ndos gráficos" as UC_PublishPoints
+
+    usecase "Conectar ao painel" as UC_ConnectFrontend
+    usecase "Visualizar valores\ndos PIDs" as UC_ViewValues
+    usecase "Visualizar gráficos" as UC_ViewCharts
+    usecase "Visualizar status\nda conexão" as UC_ViewStatus
+}
+
+actor "Backend\n.NET 9" as Backend
+actor "Frontend\nWeb" as Frontend
+
+ESP32 --> UC_SupportedPids
+ESP32 --> UC_Subscribe
+ESP32 --> UC_RawReading
+
+Backend --> UC_Receive
+Backend --> UC_Subscribe
+Backend --> UC_PublishValues
+Backend --> UC_PublishPoints
+
+Frontend --> UC_ConnectFrontend
+Frontend --> UC_ViewValues
+Frontend --> UC_ViewCharts
+Frontend --> UC_ViewStatus
+
+' Mantém a comunicação visual entre os lados do sistema.
+ESP32 -[hidden]right-> UC_Receive
+UC_PublishValues -[hidden]right-> Backend
+UC_ViewValues -[hidden]right-> Frontend
+
+UC_Receive ..> UC_Validate : <<include>>
+UC_Receive ..> UC_Decode : <<include>>
+UC_Decode ..> UC_LatestValue : <<include>>
+UC_LatestValue ..> UC_PublishValues : <<include>>
+
+UC_LatestValue ..> UC_EvaluateCharts : <<include>>
+UC_EvaluateCharts ..> UC_PublishPoints : <<include>>
+
+UC_ConnectFrontend ..> UC_ViewStatus : <<include>>
+UC_ConnectFrontend ..> UC_ViewValues : <<include>>
+UC_ConnectFrontend ..> UC_ViewCharts : <<include>>
+
+@enduml

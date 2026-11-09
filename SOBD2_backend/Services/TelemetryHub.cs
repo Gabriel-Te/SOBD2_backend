@@ -15,7 +15,9 @@ public class TelemetryHub
     private readonly List<IChartStrategy> _strategies = new()
     {
         new RpmVsTimeChartStrategy(),
-        // adicione as outras strategies aqui
+        new RpmVsSpeedChartStrategy(),
+        new MapVsRpmChartStrategy(),
+        new ThrottleVsRpmChartStrategy()
     };
 
     public TelemetryHub(

@@ -26,7 +26,7 @@ O projeto usa .NET 9, C# moderno e `Microsoft.NET.Sdk.Web`.
 | Camada | Responsabilidades | Não deve fazer |
 |---|---|---|
 | ESP32 | Conversar com o ELM327, descobrir PIDs, executar a assinatura, carimbar timestamp e enviar bytes crus | Decodificar fórmulas, decidir gráficos ou conhecer regras de apresentação |
-| Backend | Receber mensagens, validar PIDs, decodificar bytes, manter últimos valores, gerar pontos dos gráficos e distribuir dados | Acessar o carro diretamente |
+| Backend | Receber mensagens, validar PIDs, decodificar bytes, manter últimos valores, gerar pontos dos gráficos e distribuir dados; futuramente persistir telemetrias no MongoDB | Acessar o carro diretamente |
 | Frontend | Receber valores e pontos prontos via SignalR e apresentar tabela/gráficos | Fazer cálculos de negócio ou decodificação OBD-II |
 
 O backend é o cérebro. O ESP32 envia leituras automaticamente depois de receber uma assinatura; o backend não deve pedir cada leitura individualmente.
@@ -44,6 +44,8 @@ O backend é o cérebro. O ESP32 envia leituras automaticamente depois de recebe
 - `TelemetryClientHub` é o Hub SignalR dos navegadores e não deve conter a lógica de negócio da telemetria.
 - O padrão Strategy é usado para os gráficos: cada strategy declara PIDs necessários e monta um `ChartPoint`.
 - O padrão Adapter para separar transportes/dispositivos ainda é uma pendência. Não alterar `ESP32Service` para adapter sem planejar a migração de DI e do endpoint.
+- A persistência histórica das telemetrias será feita futuramente em MongoDB. O banco ainda não foi implementado.
+- `LatestValueStore` e MongoDB terão responsabilidades diferentes: o primeiro manterá o último valor em memória; o segundo armazenará o histórico.
 
 ## 4. Fluxo completo
 
@@ -208,6 +210,8 @@ Ao depurar, mensagens de carregamento de DLL não indicam falha. Os logs importa
 9. Adicionar validação de tamanho/paridade de hexadecimal e quantidade esperada de bytes no decoder.
 10. Adicionar logs estruturados e remover `Console.WriteLine` de diagnóstico quando o MVP estiver estabilizado.
 11. Definir política de múltiplas conexões/dispositivos; o estado atual mantém um único socket e um único conjunto de PIDs.
+12. Implementar a persistência histórica das telemetrias em MongoDB.
+13. Criar uma abstração como `ITelemetryRepository` antes de acoplar o domínio ao MongoDB.
 
 ## 12. Ordem recomendada a partir daqui
 
@@ -218,6 +222,7 @@ Ao depurar, mensagens de carregamento de DLL não indicam falha. Os logs importa
 5. Implementar `IDeviceAdapter`/adapters do ESP32 e MockAdapter.
 6. Integrar ELM327 Bluetooth real.
 7. Testar com o carro e tratar fallback multi-PID.
+8. Implementar e testar a persistência histórica em MongoDB.
 
 Não alterar arquivos fora do escopo solicitado. Antes de escrever código, explicar o fluxo e confirmar a regra de negócio quando houver ambiguidade.
 
@@ -288,3 +293,95 @@ Antes de alterar o código:
 10. Não adicionar Design Patterns sem necessidade real.
 
 O próximo foco recomendado é estabilizar o fluxo existente, criar testes para `PidDecoder`, `LatestValueStore` e `RpmVsTimeChartStrategy`, e tratar a desconexão do dispositivo antes de expandir a arquitetura.
+
+## 18. Strategies de gráficos implementadas
+
+Além de `RpmVsTimeChartStrategy`, foram implementadas as seguintes Strategies:
+
+- `RpmVsSpeedChartStrategy`: X = velocidade (`01-0D`), Y = RPM (`01-0C`).
+- `MapVsRpmChartStrategy`: X = RPM (`01-0C`), Y = pressão MAP (`01-0B`).
+- `ThrottleVsRpmChartStrategy`: X = RPM (`01-0C`), Y = posição do acelerador/TPS (`01-11`).
+
+As novas Strategies usam o contrato atual de `IChartStrategy` e retornam `null` quando algum PID necessário não está disponível ou está expirado.
+
+## 19. Regra de negócio para gráficos com múltiplos PIDs
+
+Os PIDs de X e Y não precisam ser atualizados exatamente ao mesmo tempo.
+
+Quando uma nova leitura de qualquer PID chega, o `TelemetryHub` atualiza o `LatestValueStore` e avalia todas as Strategies. A Strategy usa o valor recém-recebido e o último valor conhecido dos outros PIDs necessários, caracterizando `sample-and-hold`.
+
+Um ponto só deve ser criado quando:
+
+1. todos os PIDs necessários existirem no snapshot;
+2. todos os valores estiverem recentes;
+3. cada valor tiver idade entre zero e `MaxAgeMs`.
+
+O limite atual usado pelas Strategies de dois PIDs é `500 ms`, seguindo a regra da Strategy de RPM por tempo.
+
+Exemplo para `RpmVsSpeedChartStrategy`:
+
+```
+chega RPM
+	↓
+usa a última velocidade válida
+	↓
+cria ponto se a velocidade tiver até 500 ms
+```
+
+ou:
+
+```
+chega velocidade
+	↓
+usa o último RPM válido
+	↓
+cria ponto se o RPM tiver até 500 ms
+```
+
+Se um dos valores estiver ausente ou expirado, nenhum `chartPoint` deve ser publicado para aquela avaliação.
+
+## 17. Persistência futura em MongoDB
+
+O projeto utilizará MongoDB para armazenar o histórico das telemetrias, mas essa funcionalidade ainda não foi implementada.
+
+Não adicionar ainda pacote, connection string, repositório, coleção ou configuração de MongoDB sem uma solicitação específica para iniciar essa etapa.
+
+Quando a implementação começar, o fluxo esperado será:
+
+```
+rawReading
+	↓
+validação
+	↓
+PidDecoder
+	↓
+PidReading
+	├── LatestValueStore: último valor em memória
+	├── MongoDB: histórico persistido
+	└── ClientBroadcaster: eventos SignalR
+```
+
+O MongoDB não substituirá o `LatestValueStore`:
+
+- `LatestValueStore` será usado pelo processamento em tempo real e pelas Strategies.
+- MongoDB será usado para histórico, consultas posteriores e análise das telemetrias.
+
+A implementação futura deve preferir uma abstração, por exemplo `ITelemetryRepository`, com uma implementação `MongoTelemetryRepository` registrada por DI.
+
+O documento persistido deverá considerar, no mínimo:
+
+- `DeviceId`;
+- `PidKey` com modo e PID;
+- valor decodificado;
+- unidade;
+- bytes crus recebidos, se necessários para auditoria;
+- timestamp informado pelo dispositivo;
+- timestamp de recebimento do backend.
+
+A escolha dos índices, política de retenção, estratégia de retry e comportamento quando o MongoDB estiver indisponível devem ser definidos antes da implementação.
+
+
+## Diretrizes de projeto
+
+- Para diagramas de casos de uso, o usuário prefere uma representação tradicional UML com três atores principais (Backend, placa ESP32 e Frontend), bonecos de palito, retângulo de limite do sistema e relações simples `include`; não quer um diagrama excessivamente complexo nem necessariamente em Mermaid.
+- Para gráficos com múltiplos PIDs, não esperar que X e Y sejam atualizados simultaneamente. Ao receber uma leitura nova de qualquer PID necessário, a Strategy usa sample-and-hold com o último valor do outro eixo, desde que todos os valores estejam presentes e dentro de um MaxAgeMs. O ponto só é emitido quando todos os PIDs necessários estão frescos; a idade e o timestamp devem ser considerados para evitar combinações obsoletas.
