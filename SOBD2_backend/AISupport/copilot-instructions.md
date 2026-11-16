@@ -1,4 +1,5 @@
 # Contexto do Projeto: Telemetria OBD-II em Tempo Real
+# Contexto do Projeto: Telemetria OBD-II em Tempo Real
 
 > Leia este arquivo antes de sugerir alterações. Responda em português do Brasil, de forma didática e objetiva.
 > O usuário precisa entender e conseguir defender as decisões do código na apresentação do projeto.
@@ -19,65 +20,64 @@ Backend C# / .NET 9
 Frontend JavaScript
 ```
 
-O projeto usa .NET 9, C# moderno e `Microsoft.NET.Sdk.Web`.
+O projeto utiliza .NET 9, C# moderno e `Microsoft.NET.Sdk.Web`.
 
-## 2. Responsabilidades
+## 2. Responsabilidades das camadas
 
 | Camada | Responsabilidades | Não deve fazer |
 |---|---|---|
 | ESP32 | Conversar com o ELM327, descobrir PIDs, executar a assinatura, carimbar timestamp e enviar bytes crus | Decodificar fórmulas, decidir gráficos ou conhecer regras de apresentação |
-| Backend | Receber mensagens, validar PIDs, decodificar bytes, manter últimos valores, gerar pontos dos gráficos e distribuir dados; futuramente persistir telemetrias no MongoDB | Acessar o carro diretamente |
-| Frontend | Receber valores e pontos prontos via SignalR e apresentar tabela/gráficos | Fazer cálculos de negócio ou decodificação OBD-II |
+| Backend | Receber mensagens, validar PIDs, decodificar bytes, manter últimos valores, gerar pontos dos gráficos e distribuir dados | Acessar o carro diretamente |
+| Frontend | Receber valores e pontos prontos via SignalR e apresentar a telemetria | Fazer cálculos de negócio ou decodificação OBD-II |
 
-O backend é o cérebro. O ESP32 envia leituras automaticamente depois de receber uma assinatura; o backend não deve pedir cada leitura individualmente.
+O backend é o cérebro da aplicação. Depois de receber uma assinatura, o ESP32 consulta e envia as leituras automaticamente. O backend não solicita cada leitura individualmente.
 
-## 3. Decisões de arquitetura
+## 3. Arquitetura implementada
 
 - O ESP32 usa WebSocket puro em `/ws/device`.
 - O navegador usa SignalR em `/hubs/telemetry`.
-- `ESP32Service` mantém o WebSocket e expõe eventos `OnMessage` e `OnDisconnected`.
-- `TelemetryHub` é um singleton criado por injeção de dependência. O `Program.cs` força sua criação para que ele se inscreva no evento do `ESP32Service` durante a inicialização.
-- `LatestValueStore` usa `ConcurrentDictionary<PidKey, PidReading>` e guarda o último valor de cada PID.
-- `PidCatalog` fornece os metadados do PID.
-- `PidDecoder` converte o hexadecimal recebido em valor físico. O `Formula` do descriptor documenta a fórmula, mas atualmente a execução é feita por `switch` no decoder.
-- `ClientBroadcaster` usa `IHubContext<TelemetryClientHub>` para publicar eventos SignalR.
-- `TelemetryClientHub` é o Hub SignalR dos navegadores e não deve conter a lógica de negócio da telemetria.
-- O padrão Strategy é usado para os gráficos: cada strategy declara PIDs necessários e monta um `ChartPoint`.
-- O padrão Adapter para separar transportes/dispositivos ainda é uma pendência. Não alterar `ESP32Service` para adapter sem planejar a migração de DI e do endpoint.
-- A persistência histórica das telemetrias será feita futuramente em MongoDB. O banco ainda não foi implementado.
-- `LatestValueStore` e MongoDB terão responsabilidades diferentes: o primeiro manterá o último valor em memória; o segundo armazenará o histórico.
+- `ESP32Service` mantém o WebSocket e expõe `OnMessage` e `OnDisconnected`.
+- `TelemetryHub` é registrado como singleton. O `Program.cs` força sua criação para que ele se inscreva no evento `OnMessage` durante a inicialização.
+- `LatestValueStore` usa `ConcurrentDictionary<PidKey, PidReading>` e guarda o último valor de cada PID em memória.
+- `PidCatalog` fornece nome, unidade, quantidade de bytes, limites e fórmula documentada dos PIDs conhecidos.
+- `PidDecoder` converte o hexadecimal recebido em valor físico. A propriedade `Formula` documenta a regra; a execução atual é feita por `switch`.
+- `ClientBroadcaster` usa `IHubContext<TelemetryClientHub>` para publicar `pidValue` e `chartPoint`.
+- `TelemetryClientHub` é o Hub SignalR dos navegadores e não contém lógica de negócio da telemetria.
+- O padrão Strategy é usado para os gráficos. Cada strategy declara os PIDs necessários e monta um `ChartPoint`.
+- O padrão Adapter ainda não foi implementado. Não alterar `ESP32Service` para Adapter sem planejar a migração de DI e do endpoint.
+- MongoDB ainda não foi implementado. A persistência histórica é uma etapa futura.
 
-## 4. Fluxo completo
+## 4. Fluxo completo implementado
 
 1. O backend inicia em `http://0.0.0.0:5000`.
-2. O `Program.cs` registra os singletons, habilita WebSocket, CORS e arquivos estáticos, mapeia `/ws/device` e `/hubs/telemetry`.
+2. O `Program.cs` registra os serviços, habilita WebSocket, CORS e arquivos estáticos, e mapeia `/ws/device` e `/hubs/telemetry`.
 3. O ESP32 conecta em `/ws/device`.
 4. O endpoint aceita o socket e chama `ESP32Service.HandleConnectionAsync`.
-5. O ESP32 descobre PIDs suportados no carro e envia imediatamente `supportedPids`.
-6. `ESP32Service` recebe o texto e dispara `OnMessage`.
-7. `TelemetryHub`, inscrito nesse evento, desserializa a mensagem.
-8. Para `supportedPids`, converte cada PID hexadecimal para `PidKey` com modo `0x01`, guarda em `_supportedPids` e envia uma mensagem `subscribe` ao ESP32.
-9. O ESP32 executa a assinatura localmente e envia `rawReading` sem novo pedido do backend para cada amostra.
-10. Para `rawReading`, o Hub valida o PID, busca o `PIDDescriptor`, decodifica `data`, cria `PidReading` e atualiza o `LatestValueStore`.
-11. O Hub chama `ClientBroadcaster.BroadcastLatestAsync`, enviando o snapshot dos PIDs pelo evento SignalR `pidValue`.
-12. O Hub chama `EvaluateCharts`, que percorre as strategies configuradas, gera pontos possíveis e os envia pelo evento SignalR `chartPoint`.
-13. O frontend atualiza a tabela e o gráfico em tempo real.
+5. O ESP32 descobre os PIDs suportados e envia `supportedPids`.
+6. `ESP32Service` remonta mensagens fragmentadas e dispara `OnMessage`.
+7. `TelemetryHub` desserializa a mensagem.
+8. Em `supportedPids`, o Hub converte os PIDs para `PidKey` no modo `0x01`, guarda `_supportedPids` e envia `subscribe`.
+9. O ESP32 executa a assinatura localmente e envia `rawReading`.
+10. Em `rawReading`, o Hub valida o PID, busca o descriptor, decodifica `Data`, cria `PidReading` e atualiza o `LatestValueStore`.
+11. O Hub publica o snapshot pelo evento SignalR `pidValue`.
+12. O Hub avalia todas as strategies disponíveis e publica pontos pelo evento `chartPoint`.
+13. O frontend atualiza os valores e os gráficos.
 
-Eventos C# são callbacks/listeners: `OnMessage += HandleDeviceMessageAsync` registra um método para ser executado quando o evento é disparado. Não são triggers de banco de dados. O `await OnMessage(text)` executa os handlers inscritos e aguarda seu processamento.
+Eventos C# são callbacks/listeners. A instrução `OnMessage += HandleDeviceMessageAsync` registra um handler; `await OnMessage(text)` executa e aguarda os handlers inscritos.
 
-## 5. Contrato de mensagens
+## 5. Contratos de mensagens
 
-As mensagens devem respeitar exatamente os nomes definidos no contrato. As mensagens enviadas pelo ESP32 usam `Type`, `DeviceId`, `Pid`, `Data`, `Timestamp` e `Pids`. A mensagem `subscribe` enviada pelo backend usa `type`, `groups`, `periodMs` e `pids`.
-
-O contrato oficial atual utiliza `Timestamp`. Não usar `Ts` sem implementar compatibilidade explícita no `DeviceMessage` com `JsonPropertyName` ou outro mapeamento equivalente.
+Os nomes do contrato devem ser preservados.
 
 ### ESP32 → backend
 
 ```json
-{"Type":"hello","DeviceId":"esp32-mock","Adapter":"ELM327_BT","Protocol":"ISO 15765-4 CAN 11/500"}
-{"Type":"supportedPids","DeviceId":"esp32-mock","Pids":["04","05","0B","0C","0D"]}
-{"Type":"rawReading","DeviceId":"esp32-mock","Pid":"0C","Data":"1AF8","Timestamp":123456}
+{"Type":"hello","DeviceId":"esp32-carro-01","Adapter":"ELM327_BT","Protocol":"OBD-II"}
+{"Type":"supportedPids","DeviceId":"esp32-carro-01","Pids":["04","05","0B","0C","0D"]}
+{"Type":"rawReading","DeviceId":"esp32-carro-01","Pid":"0C","Data":"1AF8","Timestamp":123456}
 ```
+
+O campo oficial é `Timestamp`. Não substituir por `Ts` sem compatibilidade explícita no DTO.
 
 ### Backend → ESP32
 
@@ -85,303 +85,217 @@ O contrato oficial atual utiliza `Timestamp`. Não usar `Ts` sem implementar com
 {"type":"subscribe","groups":[{"periodMs":200,"pids":["04","05","0B","0C","0D"]}]}
 ```
 
-A leitura `Data: "1AF8"` para o PID `0C` representa `(0x1A * 256 + 0xF8) / 4 = 1726 rpm`.
+O ESP32 interpreta `periodMs` como intervalo entre ciclos de consulta. Como os PIDs são consultados sequencialmente, o intervalo efetivo de atualização de cada PID pode ser maior.
 
-### Eventos SignalR → frontend
+### SignalR → frontend
 
-- `deviceStatus`: conexão do cliente SignalR e estado do dispositivo quando implementado.
-- `pidValue`: snapshot dos últimos valores.
-- `chartPoint`: ponto produzido por uma strategy.
-- `catalog` e `charts`: previstos para configuração futura do frontend.
-
-Formato atual aproximado de `pidValue`:
+Evento `pidValue` atual do código:
 
 ```json
 [{"pid":"01-0C","value":1726,"timestamp":123456}]
 ```
 
-Formato atual de `chartPoint`:
+O contrato planejado para a interface com nomes e unidades é:
+
+```json
+[{"pid":"01-0C","name":"Rotação do motor","unit":"rpm","value":1726,"timestamp":123456}]
+```
+
+Esse formato só deve ser documentado como implementado depois que `ClientBroadcaster` for alterado para enviar `name` e `unit`.
+
+Evento `chartPoint`:
 
 ```json
 {"chart":"RPM vs Tempo","x":123456,"y":[1726],"timestamp":123456}
 ```
 
-## 6. Arquivos atuais e responsabilidades
+A estrutura é estável. O significado de `x` e `y` depende da strategy.
+
+## 6. Arquivos e responsabilidades
 
 ### Entrada e infraestrutura
 
-- `Program.cs`: DI, CORS permissivo para desenvolvimento, arquivos estáticos, endpoint WebSocket, endpoint SignalR e criação do `TelemetryHub`.
-- `Hubs/TelemetryClientHub.cs`: herda de `Hub` e envia `deviceStatus` ao cliente conectado.
-- `Services/ESP32Service.cs`: recebe fragmentos/mensagens WebSocket, remonta mensagens completas, dispara eventos e envia JSON ao dispositivo.
-- `Services/ClientBroadcaster.cs`: publica `pidValue` e `chartPoint` via `IHubContext<TelemetryClientHub>`.
+- `Program.cs`: DI, CORS, WebSocket, SignalR, arquivos estáticos e endpoints.
+- `Hubs/TelemetryClientHub.cs`: Hub dos navegadores; envia o status da conexão SignalR.
+- `Services/ESP32Service.cs`: recebe fragmentos WebSocket, remonta mensagens, dispara eventos e envia JSON ao ESP32.
+- `Services/TelemetryHub.cs`: processa mensagens do dispositivo, atualiza o store, executa strategies e chama o broadcaster.
+- `Services/ClientBroadcaster.cs`: publica eventos SignalR.
 
 ### Domínio OBD-II
 
-- `Entities/PidKey.cs`: struct imutável com `Mode`, `Pid`, igualdade, hash e representação hexadecimal.
-- `Entities/PIDDescriptor.cs`: metadados imutáveis do PID: chave, nome, unidade, quantidade de bytes, limites e fórmula documentada.
-- `Services/PidCatalog.cs`: catálogo atual de PIDs Mode 01.
-- `Services/PidDecoder.cs`: recebe `PIDDescriptor` e string hexadecimal, converte bytes e aplica a fórmula conhecida pelo PID.
-- `Services/LatestValueStore.cs`: guarda `PidReading` por `PidKey` em `ConcurrentDictionary`.
+- `Entities/PidKey.cs`: struct imutável com modo, PID, igualdade, hash e representação hexadecimal.
+- `Entities/PIDDescriptor.cs`: metadados do PID.
+- `Services/PidCatalog.cs`: catálogo dos PIDs Mode 01 conhecidos.
+- `Services/PidDecoder.cs`: conversão de bytes crus para valores físicos.
+- `Services/LatestValueStore.cs`: último `PidReading` de cada PID em memória.
 
-### Gráficos
+`DeviceMessage` ainda está declarado no final de `Services/TelemetryHub.cs`. Não assumir que existe um arquivo DTO separado.
 
-- `Services/IChartStrategy.cs`: contrato de uma strategy e classe `ChartPoint`.
-- `RpmVsTimeChartStrategy.cs`: strategy atual de RPM no tempo, exigindo PID `01-0C`.
-- `Services/TelemetryHub.cs`: processa mensagens, atualiza store, executa strategies e chama o broadcaster.
-- `frontend_teste/index.html`: cliente SignalR de teste; exibe PIDs, logs e desenha uma linha simples em Canvas.
+### Frontend atual
 
-## 7. PIDs atualmente catalogados
+`frontend_teste/index.html` é um cliente SignalR de teste. Na versão atual registrada neste documento, ele usa Canvas manual, exibe logs, mostra os últimos valores em tabela e desenha um gráfico único.
+
+A migração para Chart.js, múltiplos gráficos e uma lateral com nome e unidade dos PIDs é planejada. Depois de implementada, esta seção deve ser atualizada.
+
+## 7. PIDs catalogados
 
 Mode 01:
 
 | PID | Nome | Bytes | Fórmula | Unidade |
 |---|---|---:|---|---|
-| 04 | Carga calculada | 1 | `A * 100 / 255` | % |
-| 05 | Temperatura do líquido | 1 | `A - 40` | °C |
-| 0B | Pressão MAP | 1 | `A` | kPa |
-| 0C | Rotação | 2 | `(256*A + B) / 4` | rpm |
+| 04 | Carga calculada do motor | 1 | `A * 100 / 255` | % |
+| 05 | Temperatura do líquido de arrefecimento | 1 | `A - 40` | °C |
+| 0B | Pressão do coletor (MAP) | 1 | `A` | kPa |
+| 0C | Rotação do motor | 2 | `(256*A + B) / 4` | rpm |
 | 0D | Velocidade | 1 | `A` | km/h |
-| 0F | Temperatura do ar | 1 | `A - 40` | °C |
-| 10 | Vazão MAF | 2 | `(256*A + B) / 100` | g/s |
-| 11 | Posição do acelerador | 1 | `A * 100 / 255` | % |
 | 0E | Avanço da ignição | 1 | `(A / 2) - 64` | ° |
+| 0F | Temperatura do ar de admissão | 1 | `A - 40` | °C |
+| 10 | Vazão de ar (MAF) | 2 | `(256*A + B) / 100` | g/s |
+| 11 | Posição do acelerador (TPS) | 1 | `A * 100 / 255` | % |
 | 1F | Temperatura do combustível | 1 | `A - 40` | °C |
 | 2F | Nível de combustível | 1 | `A * 100 / 255` | % |
 | 46 | Temperatura ambiente | 1 | `A - 40` | °C |
 
-O catálogo é independente da disponibilidade real do carro. A lista recebida em `supportedPids` define os PIDs que podem ser aceitos para a sessão atual.
+O catálogo representa os PIDs conhecidos pelo backend. A lista recebida em `supportedPids` define quais estão disponíveis na sessão atual.
 
-## 8. Regras atuais dos gráficos
+## 8. Strategies implementadas
 
-- Não há enumeração de tipos de gráfico no contrato atual. O conceito é um gráfico de X contra um ou mais Y.
-- Um ponto tem um X, um vetor de Y e timestamp.
-- O caso comum é X = tempo de observação e Y = um ou mais PIDs.
-- No futuro, X e qualquer Y poderão ser funções que combinem dois ou mais `PidReading`; a strategy deve declarar todos os PIDs necessários e realizar a combinação no backend.
-- Um gráfico pode ter vários Y, por isso `ChartPoint.Y` é `double[]`.
-- O frontend apenas desenha o ponto recebido; não deve recomputar a regra de negócio.
-- Não existe status `Partial`. Um gráfico só é considerado disponível quando todos os `RequiredPids` estão em `_supportedPids`; caso contrário, a strategy não é avaliada.
-- PIDs disponíveis que não participam de gráfico continuam sendo enviados no evento `pidValue` e podem ser mostrados como informações isoladas.
-- `EvaluateCharts` percorre todas as strategies configuradas. No futuro, deve-se separar strategies disponíveis/ativas quando o número crescer, filtrando-as após `supportedPids` e avaliando somente as ativas.
-- O `RpmVsTimeChartStrategy` exige `01-0C`, usa timestamp como X, aceita leitura com até 500 ms e produz Y com RPM.
-- Se faltar dado no snapshot ou ele estiver expirado, a strategy retorna `null` e nenhum `chartPoint` é enviado.
-- A regra de sample-and-hold e `MaxAgeMs` por eixo ainda precisa ser formalizada nas classes de gráfico; não inventar essa API sem alinhar primeiro.
+O `TelemetryHub` configura atualmente estas strategies:
 
-## 9. Frontend de teste
+- `RpmVsTimeChartStrategy`: X = timestamp da leitura; Y = RPM (`01-0C`).
+- `RpmVsSpeedChartStrategy`: X = velocidade (`01-0D`); Y = RPM (`01-0C`).
+- `MapVsRpmChartStrategy`: X = RPM (`01-0C`); Y = MAP (`01-0B`).
+- `ThrottleVsRpmChartStrategy`: X = RPM (`01-0C`); Y = TPS (`01-11`).
 
-O arquivo `frontend_teste/index.html` usa SignalR 8.0.7 por CDN e registra handlers para `deviceStatus`, `pidValue` e `chartPoint`. Quando servido pelo próprio backend, deve usar URL relativa `/hubs/telemetry` e ser acessado por HTTP, nunca por `file://`.
+As strategies de dois PIDs usam `sample-and-hold`: os valores não precisam chegar exatamente juntos. Quando chega uma leitura, a strategy usa o último valor conhecido dos outros PIDs necessários.
 
-Para Live Server (normalmente `127.0.0.1:5500`), a URL deve ser absoluta:
+Um ponto só é criado quando:
+
+1. todos os PIDs necessários existem no snapshot;
+2. todos os valores estão recentes;
+3. a idade de cada leitura está entre zero e `MaxAgeMs`.
+
+O limite atual para as strategies é `500 ms`. Se faltar um PID ou algum valor estiver expirado, a strategy retorna `null` e nenhum `chartPoint` é enviado.
+
+O frontend deve manter os pontos separados pelo campo `chart`. Nunca misturar pontos de strategies diferentes.
+
+## 9. Firmware ESP32 validado
+
+O firmware atual:
+
+- cria o Access Point `Telemetry_AP`;
+- conecta ao ELM327 por Bluetooth Classic usando o MAC configurado;
+- inicializa o ELM327;
+- consulta máscaras de PIDs suportados;
+- mantém apenas PIDs conhecidos pelo backend;
+- conecta ao backend em `192.168.4.2:5000/ws/device`;
+- envia `hello` e `supportedPids`;
+- recebe `subscribe`;
+- ordena os PIDs por prioridade;
+- consulta os PIDs sequencialmente;
+- envia bytes crus em `rawReading`;
+- usa `millis()` no campo `Timestamp`;
+- tenta reconectar ao ELM327 e ao backend;
+- trata `NO DATA`, `ERROR` e respostas inválidas sem aplicar fórmulas OBD-II.
+
+Para o PID `0C`, o ESP32 envia os bytes `A` e `B`; o backend aplica `(256 * A + B) / 4`. O ESP32 não deve calcular RPM, velocidade, temperatura ou qualquer outro valor físico.
+
+O `hello` é recebido pelo backend, mas atualmente não possui uma rotina de negócio específica; a mensagem é registrada como tipo não tratado. Isso não impede o fluxo de assinatura.
+
+## 10. Estado real do MVP
+
+O fluxo principal foi validado com ESP32, ELM327, backend e frontend:
+
+- inicialização do ELM327;
+- descoberta de PIDs;
+- conexão WebSocket;
+- desserialização de `supportedPids`;
+- envio de `subscribe`;
+- envio de `rawReading`;
+- filtragem de PID suportado;
+- decodificação de `1AF8` para `1726 rpm`;
+- atualização do `LatestValueStore`;
+- geração dos pontos das strategies;
+- publicação SignalR de `pidValue` e `chartPoint`.
+
+O MVP atual suporta um único dispositivo e um único socket. Os valores ficam somente em memória.
+
+## 11. Pendências e melhorias
+
+### Prioridade alta
+
+1. Criar testes automatizados para `PidDecoder`, `LatestValueStore`, `TelemetryHub` e strategies.
+2. Validar paridade do hexadecimal e quantidade esperada de bytes no decoder.
+3. Atualizar `ClientBroadcaster` para enviar `name` e `unit` no evento `pidValue`.
+4. Substituir o frontend Canvas por Chart.js com um gráfico separado por strategy.
+5. Adicionar a lateral de PIDs com nome, valor, unidade e timestamp decorrido.
+6. Corrigir o status de desconexão do dispositivo e propagá-lo aos navegadores.
+
+### Prioridade média
+
+7. Separar `DeviceMessage` e outros DTOs em arquivos próprios.
+8. Adicionar catálogo e configuração de gráficos via SignalR.
+9. Adicionar logs estruturados e remover diagnósticos diretos por `Console.WriteLine`.
+10. Definir política para múltiplas conexões e múltiplos dispositivos.
+11. Refinar timeout, retry e tratamento de `NO DATA` do ELM327.
+12. Avaliar uma máquina de estados no firmware para reduzir bloqueios durante consultas sequenciais.
+
+### Planejado
+
+13. Criar `IDeviceAdapter` sem quebrar o endpoint nem a DI.
+14. Integrar outros adaptadores, como ELM327 real ou CAN nativo, quando aplicável.
+15. Criar `ITelemetryRepository`.
+16. Implementar persistência histórica em MongoDB.
+17. Adicionar consultas históricas, retenção, índices e política de retry.
+
+MongoDB não deve ser adicionado sem solicitação específica. Ele não substituirá o `LatestValueStore`: o store atende o tempo real; o MongoDB atenderá o histórico.
+
+## 12. Regras para futuras alterações
+
+Antes de alterar o código:
+
+1. Ler este documento e os arquivos diretamente relacionados.
+2. Distinguir implementação atual de planejamento.
+3. Preservar os contratos JSON existentes.
+4. Manter o ESP32 sem regras de negócio.
+5. Manter a decodificação OBD-II exclusivamente no backend.
+6. Não misturar dados de strategies diferentes no frontend.
+7. Preferir alterações pequenas, testáveis e compatíveis com .NET 9.
+8. Validar a compilação após alterações no backend.
+9. Executar testes relacionados quando existirem.
+10. Informar arquivos criados, editados e pendências.
+11. Não adicionar Design Patterns sem necessidade real.
+12. Atualizar este documento quando uma pendência for concluída, removendo a informação antiga em vez de apenas anexar outra versão.
+
+## 13. Execução e validação
+
+O backend deve ser iniciado em `http://0.0.0.0:5000`.
+
+O frontend pode ser servido por Live Server em `http://127.0.0.1:5500`, usando:
 
 ```javascript
 .withUrl("http://localhost:5000/hubs/telemetry")
 ```
 
-Nesse caso, CORS precisa estar habilitado no backend. A política atual é permissiva para desenvolvimento (`SetIsOriginAllowed(_ => true)`, métodos/headers e credenciais). Em produção, substituir por origens explícitas.
+Quando servido pelo próprio backend, o frontend deve estar em `wwwroot` e usar a URL relativa `/hubs/telemetry`. Não abrir o frontend por `file://`.
 
-`UseDefaultFiles` e `UseStaticFiles` estão no pipeline, mas o frontend só será servido pelo backend se estiver em `wwwroot`; a pasta atual `frontend_teste` não é automaticamente `wwwroot`.
+A política CORS atual é permissiva para desenvolvimento. Em produção, devem ser definidas origens explícitas.
 
-## 10. Simulador e validação já realizados
+A ausência da pasta `wwwroot` gera um aviso de arquivos estáticos, mas não impede a comunicação WebSocket ou SignalR quando o frontend é servido externamente.
 
-O mock do ESP32 conecta em `ws://localhost:5000/ws/device`, envia `supportedPids`, recebe `subscribe` e envia várias leituras `rawReading` em sequência.
+## 14. Documentação e diagramas
 
-O teste validou:
+`AISupport/UseCaseDiagram.txt` possui um diagrama de classes apesar do nome do arquivo.
 
-- desserialização da lista de PIDs;
-- conversão de strings hexadecimais para `PidKey`;
-- envio de `subscribe` pelo WebSocket;
-- filtragem de PID suportado;
-- decodificação `1AF8` → `1726 rpm`;
-- atualização do `LatestValueStore`;
-- geração do ponto `RPM vs Tempo`;
-- publicação de `pidValue` e `chartPoint` para clientes SignalR.
+Ao atualizar diagramas:
 
-Ao depurar, mensagens de carregamento de DLL não indicam falha. Os logs importantes são os emitidos por `TelemetryHub`.
-
-## 11. Pendências para concluir o backend
-
-1. Criar testes automatizados para `PidDecoder`, `LatestValueStore`, `TelemetryHub` e strategies.
-2. Manter o campo oficial `Timestamp` no contrato. Só adicionar compatibilidade com `Ts` se houver necessidade real e mapeamento explícito no `DeviceMessage`.
-3. Separar DTOs e `DeviceMessage` de `TelemetryHub` em arquivos próprios quando estabilizar o contrato.
-4. Implementar catálogo/configuração inicial para o frontend via SignalR.
-5. Implementar status de conexão/desconexão do dispositivo e propagá-lo aos navegadores.
-6. Implementar strategies adicionais e, se necessário, uma coleção de strategies ativas filtrada por PIDs suportados.
-7. Formalizar e implementar combinações de PIDs em eixos X/Y e regras de idade por eixo.
-8. Criar o `IDeviceAdapter` e migrar `ESP32Service` para uma arquitetura Adapter sem quebrar o endpoint nem a DI.
-9. Adicionar validação de tamanho/paridade de hexadecimal e quantidade esperada de bytes no decoder.
-10. Adicionar logs estruturados e remover `Console.WriteLine` de diagnóstico quando o MVP estiver estabilizado.
-11. Definir política de múltiplas conexões/dispositivos; o estado atual mantém um único socket e um único conjunto de PIDs.
-12. Implementar a persistência histórica das telemetrias em MongoDB.
-13. Criar uma abstração como `ITelemetryRepository` antes de acoplar o domínio ao MongoDB.
-
-## 12. Ordem recomendada a partir daqui
-
-1. Validar o frontend SignalR com o simulador.
-2. Adicionar testes unitários para decoder/store/strategies.
-3. Estabilizar DTOs e contrato JSON.
-4. Implementar mais strategies e configuração de charts.
-5. Implementar `IDeviceAdapter`/adapters do ESP32 e MockAdapter.
-6. Integrar ELM327 Bluetooth real.
-7. Testar com o carro e tratar fallback multi-PID.
-8. Implementar e testar a persistência histórica em MongoDB.
-
-Não alterar arquivos fora do escopo solicitado. Antes de escrever código, explicar o fluxo e confirmar a regra de negócio quando houver ambiguidade.
-
-## 13. Estado real revisado da aplicação
-
-O fluxo principal do MVP está implementado:
-
-- `Program.cs` configura DI, CORS, arquivos estáticos, WebSocket e SignalR.
-- `ESP32Service` recebe mensagens WebSocket, remonta fragmentos, dispara `OnMessage` e envia JSON ao dispositivo.
-- `TelemetryHub` processa `supportedPids` e `rawReading`.
-- `PidDecoder` já existe e converte dados hexadecimais em valores físicos.
-- `PidCatalog` fornece os descritores dos PIDs Mode 01.
-- `LatestValueStore` guarda o último `PidReading` por `PidKey`.
-- `ClientBroadcaster` publica `pidValue` e `chartPoint` via SignalR.
-- `TelemetryClientHub` é o Hub SignalR dos navegadores e não contém regras de negócio.
-- `RpmVsTimeChartStrategy` é a única Strategy de gráfico implementada atualmente.
-- `frontend_teste/index.html` recebe os eventos SignalR, atualiza a tabela e desenha o gráfico.
-
-`DeviceMessage` está atualmente declarado no final de `TelemetryHub.cs`. A separação para um arquivo próprio é uma melhoria futura, não assumir que esse arquivo já existe.
-
-`ESP32Service` expõe `OnDisconnected`, mas o `TelemetryHub` ainda não está inscrito nesse evento para publicar o estado de desconexão aos navegadores.
-
-As classes `RpmVsSpeedChartStrategy`, `MapVsTimeChartStrategy`, `IDeviceAdapter`, `ELM327Adapter`, `NativeCANAdapter` e `MockAdapter` são planejadas ou pertencem ao firmware futuro. Não apresentá-las como implementadas no backend atual.
-
-## 14. Regras para o firmware e o simulador
-
-O ESP32 deve permanecer como transportador de dados:
-
-- não aplicar fórmulas OBD-II;
-- não converter bytes para RPM, velocidade ou temperatura;
-- não decidir quais gráficos serão exibidos;
-- enviar os bytes crus recebidos do ELM327;
-- enviar o timestamp da leitura;
-- executar a assinatura recebida do backend sem solicitar cada leitura individualmente.
-
-O simulador pode gerar bytes hexadecimais artificialmente, mas isso serve apenas para produzir dados de teste. A lógica de decodificação continua exclusivamente no backend.
-
-Para o PID `0C`, o valor `Data` é formado pelos bytes crus `A` e `B`. O backend aplica `(256 * A + B) / 4`. O ESP32 real não deve fazer essa multiplicação ou divisão.
-
-## 15. Diagramas e documentação
-
-`AISupport/UseCaseDiagram.txt` contém atualmente um diagrama de classes, apesar do nome do arquivo.
-
-Ao atualizar o diagrama:
-
-- representar primeiro as classes realmente existentes;
-- mostrar `ESP32Service`, `TelemetryHub`, `PidCatalog`, `PidDecoder`, `LatestValueStore`, `ClientBroadcaster` e `TelemetryClientHub`;
+- representar classes realmente existentes;
+- incluir `ESP32Service`, `TelemetryHub`, `PidCatalog`, `PidDecoder`, `LatestValueStore`, `ClientBroadcaster` e `TelemetryClientHub`;
 - representar ESP32 e ELM327 como sistemas externos quando não houver código deles nesta solution;
 - mostrar WebSocket entre ESP32 e backend;
 - mostrar SignalR entre backend e frontend;
-- marcar classes futuras como `<<planejado>>`;
-- não incluir classes planejadas como se já estivessem implementadas;
-- usar sintaxe Mermaid compatível e simples, evitando assinaturas genéricas complexas quando o renderizador não as suportar.
+- marcar MongoDB, adapters e demais componentes futuros como `<<planejado>>`;
+- não representar funcionalidades planejadas como implementadas;
+- usar sintaxe simples e compatível com o renderizador utilizado.
 
-## 16. Critérios para futuras alterações
-
-Antes de alterar o código:
-
-1. Ler este arquivo e os arquivos diretamente relacionados.
-2. Distinguir implementação atual de planejamento.
-3. Preservar os contratos JSON existentes.
-4. Manter o ESP32 sem regras de negócio.
-5. Explicar decisões importantes em português do Brasil.
-6. Preferir alterações pequenas e testáveis.
-7. Validar a compilação após alterações no backend.
-8. Executar testes relacionados quando existirem.
-9. Informar arquivos criados, editados e pendências.
-10. Não adicionar Design Patterns sem necessidade real.
-
-O próximo foco recomendado é estabilizar o fluxo existente, criar testes para `PidDecoder`, `LatestValueStore` e `RpmVsTimeChartStrategy`, e tratar a desconexão do dispositivo antes de expandir a arquitetura.
-
-## 18. Strategies de gráficos implementadas
-
-Além de `RpmVsTimeChartStrategy`, foram implementadas as seguintes Strategies:
-
-- `RpmVsSpeedChartStrategy`: X = velocidade (`01-0D`), Y = RPM (`01-0C`).
-- `MapVsRpmChartStrategy`: X = RPM (`01-0C`), Y = pressão MAP (`01-0B`).
-- `ThrottleVsRpmChartStrategy`: X = RPM (`01-0C`), Y = posição do acelerador/TPS (`01-11`).
-
-As novas Strategies usam o contrato atual de `IChartStrategy` e retornam `null` quando algum PID necessário não está disponível ou está expirado.
-
-## 19. Regra de negócio para gráficos com múltiplos PIDs
-
-Os PIDs de X e Y não precisam ser atualizados exatamente ao mesmo tempo.
-
-Quando uma nova leitura de qualquer PID chega, o `TelemetryHub` atualiza o `LatestValueStore` e avalia todas as Strategies. A Strategy usa o valor recém-recebido e o último valor conhecido dos outros PIDs necessários, caracterizando `sample-and-hold`.
-
-Um ponto só deve ser criado quando:
-
-1. todos os PIDs necessários existirem no snapshot;
-2. todos os valores estiverem recentes;
-3. cada valor tiver idade entre zero e `MaxAgeMs`.
-
-O limite atual usado pelas Strategies de dois PIDs é `500 ms`, seguindo a regra da Strategy de RPM por tempo.
-
-Exemplo para `RpmVsSpeedChartStrategy`:
-
-```
-chega RPM
-	↓
-usa a última velocidade válida
-	↓
-cria ponto se a velocidade tiver até 500 ms
-```
-
-ou:
-
-```
-chega velocidade
-	↓
-usa o último RPM válido
-	↓
-cria ponto se o RPM tiver até 500 ms
-```
-
-Se um dos valores estiver ausente ou expirado, nenhum `chartPoint` deve ser publicado para aquela avaliação.
-
-## 17. Persistência futura em MongoDB
-
-O projeto utilizará MongoDB para armazenar o histórico das telemetrias, mas essa funcionalidade ainda não foi implementada.
-
-Não adicionar ainda pacote, connection string, repositório, coleção ou configuração de MongoDB sem uma solicitação específica para iniciar essa etapa.
-
-Quando a implementação começar, o fluxo esperado será:
-
-```
-rawReading
-	↓
-validação
-	↓
-PidDecoder
-	↓
-PidReading
-	├── LatestValueStore: último valor em memória
-	├── MongoDB: histórico persistido
-	└── ClientBroadcaster: eventos SignalR
-```
-
-O MongoDB não substituirá o `LatestValueStore`:
-
-- `LatestValueStore` será usado pelo processamento em tempo real e pelas Strategies.
-- MongoDB será usado para histórico, consultas posteriores e análise das telemetrias.
-
-A implementação futura deve preferir uma abstração, por exemplo `ITelemetryRepository`, com uma implementação `MongoTelemetryRepository` registrada por DI.
-
-O documento persistido deverá considerar, no mínimo:
-
-- `DeviceId`;
-- `PidKey` com modo e PID;
-- valor decodificado;
-- unidade;
-- bytes crus recebidos, se necessários para auditoria;
-- timestamp informado pelo dispositivo;
-- timestamp de recebimento do backend.
-
-A escolha dos índices, política de retenção, estratégia de retry e comportamento quando o MongoDB estiver indisponível devem ser definidos antes da implementação.
-
-
-## Diretrizes de projeto
-
-- Para diagramas de casos de uso, o usuário prefere uma representação tradicional UML com três atores principais (Backend, placa ESP32 e Frontend), bonecos de palito, retângulo de limite do sistema e relações simples `include`; não quer um diagrama excessivamente complexo nem necessariamente em Mermaid.
-- Para gráficos com múltiplos PIDs, não esperar que X e Y sejam atualizados simultaneamente. Ao receber uma leitura nova de qualquer PID necessário, a Strategy usa sample-and-hold com o último valor do outro eixo, desde que todos os valores estejam presentes e dentro de um MaxAgeMs. O ponto só é emitido quando todos os PIDs necessários estão frescos; a idade e o timestamp devem ser considerados para evitar combinações obsoletas.
+O próximo foco recomendado é aplicar e validar o frontend Chart.js, atualizar o contrato `pidValue`, criar os testes automatizados e tratar a desconexão do dispositivo antes de iniciar MongoDB ou Adapter.
