@@ -287,9 +287,17 @@ A ausência da pasta `wwwroot` gera um aviso de arquivos estáticos, mas não im
 
 `AISupport/UseCaseDiagram.txt` possui um diagrama de classes apesar do nome do arquivo.
 
+Os diagramas arquiteturais atuais também estão versionados em `AISupport`:
+
+- `Diagrama de Pacotes OBD-II.png`: visão estrutural dos principais agrupamentos da solução, separando dispositivos externos, backend .NET 9, frontend e persistência futura.
+- `Diagrama de componentes — telemetria OBD-II.png`: visão simplificada do fluxo entre Veículo/ELM327, ESP32, endpoint WebSocket, processamento de telemetria, SignalR e frontend.
+
+Os diagramas de pacotes e componentes são representações de arquitetura para documentação e apresentação. Eles não substituem o código-fonte nem devem indicar como implementado algo que ainda esteja apenas planejado. O MongoDB e qualquer repositório histórico devem permanecer identificados como futuros enquanto não existirem no código.
+
 Ao atualizar diagramas:
 
 - representar classes realmente existentes;
+- manter os diagramas de pacotes e componentes coerentes com a arquitetura implementada;
 - incluir `ESP32Service`, `TelemetryHub`, `PidCatalog`, `PidDecoder`, `LatestValueStore`, `ClientBroadcaster` e `TelemetryClientHub`;
 - representar ESP32 e ELM327 como sistemas externos quando não houver código deles nesta solution;
 - mostrar WebSocket entre ESP32 e backend;
