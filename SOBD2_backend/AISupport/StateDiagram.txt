@@ -1,0 +1,29 @@
+@startuml
+
+title Estados da Sessão de Telemetria ESP32
+
+[*] --> Desconectado
+
+Desconectado --> Conectando : iniciar conexão
+Conectando --> Conectado : WebSocket aberto
+Conectando --> Desconectado : falha ou timeout
+
+Conectado --> Identificando : receber hello
+Identificando --> AguardandoAssinatura : receber supportedPids
+AguardandoAssinatura --> Coletando : enviar subscribe
+
+Coletando --> ProcessandoLeitura : receber rawReading
+
+ProcessandoLeitura --> Coletando : leitura válida
+ProcessandoLeitura --> Coletando : PID ou dados inválidos / ignorar
+
+Coletando --> Reconectando : WebSocket desconectado
+Reconectando --> Conectando : intervalo de retry
+
+Desconectado --> [*] : encerramento da aplicação
+
+state AguardandoAssinatura as "Aguardando\nassinatura"
+state ProcessandoLeitura as "Processando\nleitura"
+state Reconectando as "Reconectando"
+
+@enduml

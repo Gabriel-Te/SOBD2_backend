@@ -1,0 +1,58 @@
+@startuml
+
+title Fluxo de Processamento da Telemetria OBD-II
+
+start
+
+:ESP32 conecta ao endpoint WebSocket;
+:Receber supportedPids;
+:Converter PIDs para PidKey;
+:Filtrar PIDs conhecidos;
+:Armazenar PIDs suportados;
+:Enviar subscribe ao ESP32;
+
+repeat
+    :Receber rawReading;
+
+    if (PID está suportado?) then (sim)
+
+        :Buscar PIDDescriptor;
+
+        if (Descriptor encontrado?) then (sim)
+
+            :Validar dados hexadecimais;
+            :Decodificar bytes OBD-II;
+
+            if (Decodificação válida?) then (sim)
+
+                :Criar PidReading;
+                :Atualizar LatestValueStore;
+                :Publicar pidValue via SignalR;
+                :Avaliar strategies de gráficos;
+
+                if (Todos os PIDs necessários estão disponíveis e recentes?) then (sim)
+                    :Criar ChartPoint;
+                    :Publicar chartPoint via SignalR;
+                else (não)
+                    :Não publicar ponto do gráfico;
+                endif
+
+            else (não)
+                :Registrar erro de decodificação;
+            endif
+
+        else (não)
+            :Ignorar PID sem descriptor;
+        endif
+
+    else (não)
+        :Ignorar PID não suportado;
+    endif
+
+repeat while (conexão WebSocket ativa?) is (sim)
+
+:Encerrar sessão ou iniciar reconexão;
+
+stop
+
+@enduml
